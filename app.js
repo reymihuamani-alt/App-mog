@@ -906,6 +906,7 @@ async function fire(a, { test = false } = {}) {
   $("#ring").classList.toggle("has-img", !!pick);
   $("#ringTime").textContent = new Date().toTimeString().slice(0, 5);
   $("#ringText").textContent = a.text;
+  $("#ringText").classList.toggle("long", a.text.length > 50);
   $("#ring").hidden = false;
   // "Audio de la imagen" (o alarmas antiguas sin sonido elegido): suena el audio de la foto; si no tiene, bip.
   const audioId = a.audioId === PHOTO_AUDIO ? pick?.audioId : a.audioId;

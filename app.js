@@ -73,7 +73,8 @@ function closeSheet(el) { el.hidden = true; document.body.style.overflow = ""; }
 $$("[data-close]").forEach((b) => b.addEventListener("click", () => {
   const sheet = b.closest(".sheet");
   closeSheet(sheet);
-  if (sheet.id === "viewer") player.stop();
+  if (sheet.id === "viewer" || sheet.id === "editor") player.stop();
+  if (sheet.id === "videoSheet") $("#vidEl").pause();
 }));
 
 /* ---------------- Navegación ---------------- */
@@ -233,6 +234,8 @@ $("#photoInput").addEventListener("change", async (e) => {
 const player = {
   el: new Audio(),
   url: null,
+  clip: null, // { start, end } si el audio es un recorte guardado sin convertir
+  current: null,
   async play(audioId, loop = false) {
     this.stop();
     const a = await DB.get("audios", audioId);
@@ -240,13 +243,30 @@ const player = {
     this.url = URL.createObjectURL(a.blob);
     this.el.src = this.url;
     this.el.loop = loop;
-    try { await this.el.play(); return true; } catch { return false; }
+    this.current = audioId;
+    this.clip = a.start != null ? { start: a.start, end: a.end } : null;
+    try {
+      if (this.clip) {
+        if (this.el.readyState < 1) await new Promise((r) => this.el.addEventListener("loadedmetadata", r, { once: true }));
+        this.el.currentTime = this.clip.start;
+      }
+      await this.el.play();
+      return true;
+    } catch { return false; }
   },
   stop() {
     this.el.pause();
+    this.clip = null;
+    this.current = null;
     if (this.url) { URL.revokeObjectURL(this.url); this.url = null; }
   },
 };
+player.el.addEventListener("timeupdate", () => {
+  const c = player.clip;
+  if (!c || player.el.currentTime < c.end) return;
+  if (player.el.loop) player.el.currentTime = c.start;
+  else { player.el.pause(); player.el.dispatchEvent(new Event("ended")); }
+});
 
 /* ---------------- Visor ---------------- */
 
@@ -361,6 +381,21 @@ async function shareBlob(blob, name) {
     toast("Tu navegador no permite compartir: se descargó");
   }
 }
+
+$("#eAudioPlay").addEventListener("click", async () => {
+  const btn = $("#eAudioPlay");
+  if (!player.el.paused) { player.stop(); btn.textContent = "▶"; return; }
+  const id = $("#eAudio").value;
+  if (!id) return toast("Elige un audio primero");
+  if (await player.play(id)) btn.textContent = "❚❚";
+});
+player.el.addEventListener("ended", () => ($("#eAudioPlay").textContent = "▶"));
+$("#eAudio").addEventListener("change", () => { player.stop(); $("#eAudioPlay").textContent = "▶"; });
+$("#eVideoInput").addEventListener("change", (e) => {
+  const f = e.target.files[0];
+  e.target.value = "";
+  if (f) openTrimmer(f, (id) => fillAudioSelect($("#eAudio"), id, "Sin audio"));
+});
 
 $("#eDownload").addEventListener("click", async () => downloadBlob(await currentBlob(), ed.rec.id));
 $("#eShare").addEventListener("click", async () => shareBlob(await currentBlob(), ed.rec.id));
@@ -477,13 +512,14 @@ async function refreshAudios() {
       <div class="grow"><div class="name"></div><div class="sub"></div></div>
       <button class="icon del">🗑</button>`;
     li.querySelector(".name").textContent = a.name;
-    li.querySelector(".sub").textContent = (a.blob.size / 1048576).toFixed(1) + " MB";
+    li.querySelector(".sub").textContent =
+      (a.fromVideo ? "🎬 de video · " + fmtTime(a.duration) + " · " : "") + (a.blob.size / 1048576).toFixed(1) + " MB";
     const playBtn = li.querySelector(".play");
     playBtn.addEventListener("click", async () => {
       const playingThis = !player.el.paused && player.current === a.id;
       $$("#audioList .play").forEach((x) => (x.textContent = "▶"));
       if (playingThis) { player.stop(); return; }
-      if (await player.play(a.id)) { player.current = a.id; playBtn.textContent = "❚❚"; }
+      if (await player.play(a.id)) playBtn.textContent = "❚❚";
     });
     li.querySelector(".del").addEventListener("click", async () => {
       if (!confirm(`¿Borrar "${a.name}"?`)) return;
@@ -512,6 +548,146 @@ function fillAudioSelect(sel, value, emptyLabel) {
   for (const a of audios) sel.append(new Option("♫ " + a.name, a.id));
   sel.value = value || "";
 }
+
+/* ---------------- Audio desde video ---------------- */
+
+function fmtTime(sec) {
+  sec = Math.max(0, sec || 0);
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+const vt = { file: null, url: null, dur: 0, onSaved: null };
+const vid = $("#vidEl");
+
+function openTrimmer(file, onSaved = null) {
+  vt.file = file;
+  vt.onSaved = onSaved;
+  if (vt.url) URL.revokeObjectURL(vt.url);
+  vt.url = URL.createObjectURL(file);
+  $("#tName").value = file.name.replace(/\.[^.]+$/, "");
+  $("#tPlay").textContent = "▶ Escuchar recorte";
+  vid.onloadedmetadata = () => {
+    vt.dur = isFinite(vid.duration) ? vid.duration : 60;
+    $("#tStart").max = $("#tEnd").max = vt.dur;
+    $("#tStart").value = 0;
+    $("#tEnd").value = Math.min(vt.dur, 30);
+    updTrim();
+  };
+  vid.onerror = () => toast("No se pudo abrir ese video", 3000);
+  vid.src = vt.url;
+  openSheet("#videoSheet");
+}
+
+function trimVals() {
+  return { start: +$("#tStart").value, end: +$("#tEnd").value };
+}
+
+function updTrim(changed) {
+  let { start, end } = trimVals();
+  const minLen = Math.min(1, vt.dur);
+  if (end - start < minLen) {
+    if (changed === "end") start = Math.max(0, end - minLen);
+    else end = Math.min(vt.dur, start + minLen);
+    $("#tStart").value = start;
+    $("#tEnd").value = end;
+  }
+  $("#tStartL").textContent = fmtTime(start);
+  $("#tEndL").textContent = fmtTime(end);
+  $("#tLen").textContent = fmtTime(end - start);
+  const sel = $("#tSel");
+  sel.style.left = (start / vt.dur) * 100 + "%";
+  sel.style.width = ((end - start) / vt.dur) * 100 + "%";
+}
+
+$("#tStart").addEventListener("input", () => { updTrim("start"); vid.currentTime = trimVals().start; });
+$("#tEnd").addEventListener("input", () => { updTrim("end"); vid.currentTime = trimVals().end; });
+
+$("#tPlay").addEventListener("click", () => {
+  if (!vid.paused) { vid.pause(); return; }
+  vid.currentTime = trimVals().start;
+  vid.play().catch(() => {});
+});
+vid.addEventListener("play", () => ($("#tPlay").textContent = "❚❚ Pausar"));
+vid.addEventListener("pause", () => ($("#tPlay").textContent = "▶ Escuchar recorte"));
+vid.addEventListener("timeupdate", () => { if (!vid.paused && vid.currentTime >= trimVals().end) vid.pause(); });
+
+// Convierte el recorte a un archivo WAV independiente del video.
+function encodeWav(chans, sr, fade) {
+  const n = chans[0].length;
+  const ch = chans.length;
+  const fadeN = fade ? Math.min(Math.floor(sr * 0.6), Math.floor(n / 4)) : 0;
+  const ab = new ArrayBuffer(44 + n * ch * 2);
+  const dv = new DataView(ab);
+  const w = (o, str) => { for (let i = 0; i < str.length; i++) dv.setUint8(o + i, str.charCodeAt(i)); };
+  w(0, "RIFF"); dv.setUint32(4, 36 + n * ch * 2, true); w(8, "WAVE");
+  w(12, "fmt "); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, ch, true);
+  dv.setUint32(24, sr, true); dv.setUint32(28, sr * ch * 2, true); dv.setUint16(32, ch * 2, true); dv.setUint16(34, 16, true);
+  w(36, "data"); dv.setUint32(40, n * ch * 2, true);
+  let o = 44;
+  for (let i = 0; i < n; i++) {
+    let g = 1;
+    if (fadeN) { if (i < fadeN) g = i / fadeN; else if (i > n - fadeN) g = (n - i) / fadeN; }
+    for (let c = 0; c < ch; c++) {
+      const x = Math.max(-1, Math.min(1, chans[c][i] * g));
+      dv.setInt16(o, x < 0 ? x * 0x8000 : x * 0x7fff, true);
+      o += 2;
+    }
+  }
+  return new Blob([ab], { type: "audio/wav" });
+}
+
+async function extractClip(file, start, end, fade) {
+  const ctx = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(2, 44100, 44100);
+  const buf = await ctx.decodeAudioData(await file.arrayBuffer());
+  const sr = buf.sampleRate;
+  const s0 = Math.floor(start * sr);
+  const s1 = Math.min(buf.length, Math.floor(end * sr));
+  if (s1 <= s0) throw new Error("recorte vacío");
+  const chans = [];
+  for (let c = 0; c < Math.min(2, buf.numberOfChannels); c++) chans.push(buf.getChannelData(c).slice(s0, s1));
+  return encodeWav(chans, sr, fade);
+}
+
+$("#tSave").addEventListener("click", async () => {
+  const btn = $("#tSave");
+  if (btn.disabled) return;
+  vid.pause();
+  const { start, end } = trimVals();
+  const name = $("#tName").value.trim() || "Audio de video";
+  const rec = { id: uid(), name, created: Date.now(), fromVideo: true, duration: end - start };
+  btn.disabled = true;
+  btn.textContent = "Procesando…";
+  try {
+    rec.blob = await extractClip(vt.file, start, end, $("#tFade").checked);
+  } catch (e) {
+    // Si el teléfono no puede decodificar el audio, guarda el video con las marcas del recorte.
+    console.warn(e);
+    Object.assign(rec, { blob: vt.file, start, end });
+  }
+  try {
+    await DB.put("audios", rec);
+    await refreshAudios();
+    closeSheet($("#videoSheet"));
+    URL.revokeObjectURL(vt.url);
+    vt.url = null;
+    vid.removeAttribute("src");
+    if (vt.onSaved) { document.body.style.overflow = "hidden"; vt.onSaved(rec.id); }
+    toast(vt.onSaved ? "Audio listo y puesto en la foto ✓" : "Audio guardado ✓");
+  } catch (e) {
+    toast("No se pudo guardar: " + e.message, 3500);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Guardar";
+  }
+});
+
+$("#videoInput").addEventListener("change", (e) => {
+  const f = e.target.files[0];
+  e.target.value = "";
+  if (f) openTrimmer(f);
+});
 
 /* ---------------- Notificaciones ---------------- */
 

@@ -36,6 +36,10 @@
         <input type="file" accept="audio/*" multiple id="audioInput" hidden>
         + Subir audio
       </label>
+      <label class="btn wide video-btn">
+        <input type="file" accept="video/*" id="videoInput" hidden>
+        🎬 Sacar audio de un video
+      </label>
       <ul class="list" id="audioList"></ul>
       <p class="hint" id="audioEmpty">Sube canciones o notas de voz. Luego puedes ponerlas en una foto o usarlas como sonido de alarma.</p>
     </section>
@@ -128,12 +132,44 @@
       </div>
       <div class="field">
         <label for="eAudio">Audio de la foto</label>
-        <select id="eAudio"></select>
+        <div class="row gap tight">
+          <select id="eAudio"></select>
+          <button class="btn icon-btn" id="eAudioPlay" aria-label="Escuchar">▶</button>
+        </div>
+        <label class="btn video-btn">
+          <input type="file" accept="video/*" id="eVideoInput" hidden>
+          🎬 Usar audio de un video
+        </label>
       </div>
       <div class="row gap">
         <button class="btn" id="eDownload">Descargar</button>
         <button class="btn" id="eShare">Compartir</button>
       </div>
+    </div>
+  </div>
+
+  <!-- RECORTAR AUDIO DE VIDEO -->
+  <div class="sheet" id="videoSheet" hidden>
+    <div class="sheet-bar">
+      <button class="icon" data-close>✕</button>
+      <b>Audio del video</b>
+      <button class="btn small primary" id="tSave">Guardar</button>
+    </div>
+    <div class="preview"><video id="vidEl" playsinline preload="metadata"></video></div>
+    <div class="controls">
+      <div class="trim">
+        <div class="trim-labels"><span id="tStartL">0:00</span><b id="tLen">0:00</b><span id="tEndL">0:00</span></div>
+        <div class="trim-bar"><i id="tSel"></i></div>
+        <label>Inicio <input type="range" id="tStart" min="0" step="0.1" value="0"></label>
+        <label>Fin <input type="range" id="tEnd" min="0" step="0.1" value="0"></label>
+      </div>
+      <button class="btn wide" id="tPlay">▶ Escuchar recorte</button>
+      <label class="check row"><input type="checkbox" id="tFade" checked> Entrada y salida suave</label>
+      <div class="field">
+        <label for="tName">Nombre del audio</label>
+        <input id="tName" maxlength="60">
+      </div>
+      <p class="hint">Solo se guarda el audio del recorte; el video no ocupa espacio en tu teléfono.</p>
     </div>
   </div>
 

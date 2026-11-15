@@ -192,19 +192,25 @@
         <div class="days" id="aDays"></div>
       </div>
       <div class="field">
+        <label>Imagen que aparece al sonar</label>
+        <div class="pick" id="aPhotos"></div>
+      </div>
+      <div class="field">
         <label for="aSound">Sonido</label>
         <select id="aSound"></select>
       </div>
+      <button class="btn wide" id="aTest">▶ Probar alarma</button>
     </div>
   </div>
 
   <!-- ALARMA SONANDO -->
   <div class="ring" id="ring" hidden>
-    <img id="ringImg" alt="">
+    <img id="ringBg" class="ring-bg" alt="">
     <div class="ring-box">
       <p class="ring-time" id="ringTime"></p>
       <p class="ring-text" id="ringText"></p>
-      <div class="row gap">
+      <img id="ringImg" class="ring-img" alt="">
+      <div class="row gap ring-actions">
         <button class="btn" id="ringSnooze">Posponer 5 min</button>
         <button class="btn primary" id="ringDone">Listo ✓</button>
       </div>

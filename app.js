@@ -209,6 +209,7 @@ async function refreshGallery() {
     grid.append(b);
   }
   $("#galleryEmpty").hidden = photos.length > 0;
+  refreshAlarms(); // sus miniaturas usan URLs que se acaban de renovar
 }
 
 $("#photoInput").addEventListener("change", async (e) => {
@@ -741,12 +742,14 @@ function refreshAlarms() {
   for (const a of [...alarms].sort((x, y) => x.time.localeCompare(y.time))) {
     const li = document.createElement("li");
     li.classList.toggle("off", !a.on);
-    li.innerHTML = `<div class="grow"><div class="time"></div><div class="name"></div><div class="sub"></div></div>
+    const ph = a.photoId && photos.find((p) => p.id === a.photoId);
+    li.innerHTML = `${ph ? '<img class="thumb" alt="">' : ""}<div class="grow"><div class="time"></div><div class="name"></div><div class="sub"></div></div>
       <label class="toggle"><input type="checkbox"><i></i></label>
       <button class="icon del">🗑</button>`;
     li.querySelector(".time").textContent = a.time;
     li.querySelector(".name").textContent = a.text;
-    li.querySelector(".sub").textContent = daysText(a.days);
+    li.querySelector(".sub").textContent = daysText(a.days) + (ph ? "" : " · 🖼 al azar");
+    if (ph) li.querySelector(".thumb").src = blobUrl(ph.rendered || ph.blob);
     const tg = li.querySelector("input");
     tg.checked = a.on;
     tg.addEventListener("change", () => { a.on = tg.checked; saveAlarms(); refreshAlarms(); });
@@ -763,6 +766,48 @@ function refreshAlarms() {
 
 let editingAlarm = null;
 let draftDays = [];
+let draftPhoto = null; // null = imagen al azar
+const PHOTO_AUDIO = "__photo";
+
+function renderPhotoPicker() {
+  const box = $("#aPhotos");
+  box.innerHTML = "";
+  const rnd = document.createElement("button");
+  rnd.textContent = "🎲 Al azar";
+  rnd.classList.toggle("on", !draftPhoto);
+  rnd.addEventListener("click", () => { draftPhoto = null; renderPhotoPicker(); });
+  box.append(rnd);
+  for (const p of photos) {
+    const b = document.createElement("button");
+    b.innerHTML = `<img alt="">${p.audioId ? '<span class="badge">♫</span>' : ""}`;
+    b.querySelector("img").src = blobUrl(p.rendered || p.blob);
+    b.classList.toggle("on", draftPhoto === p.id);
+    b.addEventListener("click", () => {
+      draftPhoto = p.id;
+      renderPhotoPicker();
+      if (p.audioId) $("#aSound").value = PHOTO_AUDIO;
+    });
+    box.append(b);
+  }
+  if (draftPhoto) box.querySelector(".on")?.scrollIntoView({ inline: "center", block: "nearest" });
+}
+
+function fillAlarmSound(value) {
+  const sel = $("#aSound");
+  fillAudioSelect(sel, null, "Bip (predeterminado)");
+  sel.insertBefore(new Option("🖼 Audio de la imagen", PHOTO_AUDIO), sel.firstChild);
+  sel.value = value === undefined ? PHOTO_AUDIO : value || "";
+}
+
+function draftAlarm() {
+  return {
+    time: $("#aTime").value || "08:00",
+    text: $("#aText").value.trim() || ALARM_PRESETS[0],
+    days: [...draftDays].sort(),
+    photoId: draftPhoto,
+    audioId: $("#aSound").value || null,
+  };
+}
 
 function renderDays() {
   const box = $("#aDays");
@@ -785,7 +830,9 @@ function openAlarmSheet(a = null) {
   $("#aText").value = a?.text || ALARM_PRESETS[0];
   draftDays = a ? [...a.days] : [0, 1, 2, 3, 4, 5, 6];
   renderDays();
-  fillAudioSelect($("#aSound"), a?.audioId, "Bip (predeterminado)");
+  draftPhoto = a?.photoId || null;
+  fillAlarmSound(a ? a.audioId : undefined);
+  renderPhotoPicker();
   const pre = $("#aPresets");
   pre.innerHTML = "";
   for (const p of ALARM_PRESETS) {
@@ -798,15 +845,11 @@ function openAlarmSheet(a = null) {
 }
 
 $("#newAlarmBtn").addEventListener("click", () => openAlarmSheet());
+$("#aTest").addEventListener("click", () => fire(draftAlarm(), { test: true }));
 
 $("#aSave").addEventListener("click", () => {
   if (!draftDays.length) return toast("Elige al menos un día");
-  const data = {
-    time: $("#aTime").value || "08:00",
-    text: $("#aText").value.trim() || ALARM_PRESETS[0],
-    days: draftDays.sort(),
-    audioId: $("#aSound").value || null,
-  };
+  const data = draftAlarm();
   if (editingAlarm) Object.assign(editingAlarm, data, { last: null });
   else alarms.push({ id: uid(), on: true, last: null, ...data });
   saveAlarms();
@@ -848,18 +891,25 @@ document.addEventListener("pointerdown", () => {
 
 let ringing = null;
 
-async function fire(a) {
-  notify(a.text);
+async function fire(a, { test = false } = {}) {
+  if (!test) notify(a.text);
   navigator.vibrate?.([400, 200, 400, 200, 400]);
   if (ringing) return;
-  ringing = a;
-  const pick = photos.length ? photos[Math.floor(Math.random() * photos.length)] : null;
-  $("#ringImg").hidden = !pick;
-  if (pick) $("#ringImg").src = blobUrl(pick.rendered || pick.blob);
+  // Imagen elegida; si se borró o es "al azar", una de la galería.
+  const pick =
+    (a.photoId && photos.find((p) => p.id === a.photoId)) ||
+    (photos.length ? photos[Math.floor(Math.random() * photos.length)] : null);
+  ringing = { ...a, photoId: pick?.id || null };
+  const src = pick ? blobUrl(pick.rendered || pick.blob) : "";
+  $("#ringImg").hidden = $("#ringBg").hidden = !pick;
+  $("#ringImg").src = $("#ringBg").src = src;
+  $("#ring").classList.toggle("has-img", !!pick);
   $("#ringTime").textContent = new Date().toTimeString().slice(0, 5);
   $("#ringText").textContent = a.text;
   $("#ring").hidden = false;
-  const ok = a.audioId && (await player.play(a.audioId, true));
+  // "Audio de la imagen" (o alarmas antiguas sin sonido elegido): suena el audio de la foto; si no tiene, bip.
+  const audioId = a.audioId === PHOTO_AUDIO ? pick?.audioId : a.audioId;
+  const ok = audioId && (await player.play(audioId, true));
   if (!ok) beeper.start();
 }
 
@@ -873,7 +923,7 @@ function stopRing() {
 $("#ringDone").addEventListener("click", stopRing);
 $("#ringSnooze").addEventListener("click", () => {
   const a = ringing;
-  snoozes.push({ at: Date.now() + 5 * 60000, text: a.text, audioId: a.audioId });
+  snoozes.push({ at: Date.now() + 5 * 60000, text: a.text, audioId: a.audioId, photoId: a.photoId });
   saveAlarms();
   stopRing();
   toast("Te aviso en 5 minutos");

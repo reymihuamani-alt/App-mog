@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b0b0c">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Mog</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="top">
+    <h1 id="title">Galería</h1>
+    <span class="handle" id="topSig"></span>
+  </header>
+
+  <main>
+    <!-- GALERÍA -->
+    <section class="view active" id="view-gallery">
+      <div class="grid" id="grid"></div>
+      <div class="empty" id="galleryEmpty">
+        <div class="empty-card">
+          <p class="bar-sample">¿Ya subiste tu primera foto?</p>
+          <p>Toca <b>+</b> para subir imágenes desde tu galería y ponerles frases.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- AUDIO -->
+    <section class="view" id="view-audio">
+      <label class="btn wide primary">
+        <input type="file" accept="audio/*" multiple id="audioInput" hidden>
+        + Subir audio
+      </label>
+      <ul class="list" id="audioList"></ul>
+      <p class="hint" id="audioEmpty">Sube canciones o notas de voz. Luego puedes ponerlas en una foto o usarlas como sonido de alarma.</p>
+    </section>
+
+    <!-- RECORDATORIOS -->
+    <section class="view" id="view-alarms">
+      <div class="perm" id="permBox">
+        <p>Activa las notificaciones para que Mog te pregunte si tomaste agua 💧</p>
+        <button class="btn primary" id="permBtn">Activar notificaciones</button>
+      </div>
+      <button class="btn wide primary" id="newAlarmBtn">+ Nuevo recordatorio</button>
+      <ul class="list" id="alarmList"></ul>
+      <p class="hint" id="alarmEmpty">Aún no tienes recordatorios.</p>
+    </section>
+
+    <!-- AJUSTES -->
+    <section class="view" id="view-settings">
+      <div class="field">
+        <label for="sigInput">Tu firma (marca de agua)</label>
+        <input id="sigInput" placeholder="@tu_usuario" maxlength="30">
+      </div>
+      <div class="field">
+        <label for="keyInput">Clave de Claude API (opcional, para frases con IA)</label>
+        <input id="keyInput" type="password" placeholder="sk-ant-..." autocomplete="off">
+        <p class="hint">Se guarda solo en este teléfono. Sin clave, Mog usa su banco de frases integrado.</p>
+      </div>
+      <button class="btn wide" id="testNotif">Probar notificación</button>
+      <p class="hint">
+        Las alarmas suenan mientras Mog está abierta o en segundo plano. Si cierras la app por completo,
+        el teléfono puede pausarla (limitación de las apps web).
+      </p>
+    </section>
+  </main>
+
+  <label class="fab" id="fab" aria-label="Subir imágenes">
+    <input type="file" accept="image/*" multiple id="photoInput" hidden>
+    <span>+</span>
+  </label>
+
+  <nav class="tabs">
+    <button data-view="gallery" class="on"><span>▦</span>Galería</button>
+    <button data-view="audio"><span>♫</span>Audio</button>
+    <button data-view="alarms"><span>⏰</span>Alarmas</button>
+    <button data-view="settings"><span>⚙</span>Ajustes</button>
+  </nav>
+
+  <!-- VISOR -->
+  <div class="sheet viewer" id="viewer" hidden>
+    <div class="sheet-bar">
+      <button class="icon" data-close>✕</button>
+      <span></span>
+      <button class="icon" id="vShare">⇪</button>
+    </div>
+    <div class="viewer-img"><img id="vImg" alt=""></div>
+    <div class="viewer-actions">
+      <button class="btn" id="vAudio" hidden>▶ Audio</button>
+      <button class="btn primary" id="vEdit">Editar</button>
+      <button class="btn danger" id="vDelete">Borrar</button>
+    </div>
+  </div>
+
+  <!-- EDITOR -->
+  <div class="sheet editor" id="editor" hidden>
+    <div class="sheet-bar">
+      <button class="icon" data-close>✕</button>
+      <b>Editar</b>
+      <button class="btn small primary" id="eSave">Guardar</button>
+    </div>
+    <div class="preview"><canvas id="canvas"></canvas></div>
+    <div class="controls">
+      <div class="styles" id="styleBtns">
+        <button data-style="bar" class="on">Barra blanca</button>
+        <button data-style="red">Rojo B/N</button>
+        <button data-style="white">Texto blanco</button>
+        <button data-style="none">Sin texto</button>
+      </div>
+      <div class="field">
+        <textarea id="eText" rows="2" placeholder="Escribe tu frase… ej. ¿Tomas suficiente agua?"></textarea>
+      </div>
+      <button class="btn wide ai" id="eAi">✨ Sugerir frase</button>
+      <div class="chips" id="aiChips" hidden>
+        <div class="topics" id="topics"></div>
+        <div id="aiResults"></div>
+      </div>
+      <div class="row">
+        <label>Tamaño <input type="range" id="eSize" min="4" max="12" step="0.5" value="7"></label>
+      </div>
+      <div class="row">
+        <label class="check"><input type="checkbox" id="eSigOn" checked> Mostrar firma</label>
+      </div>
+      <div class="field">
+        <label for="eAudio">Audio de la foto</label>
+        <select id="eAudio"></select>
+      </div>
+      <div class="row gap">
+        <button class="btn" id="eDownload">Descargar</button>
+        <button class="btn" id="eShare">Compartir</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- NUEVA ALARMA -->
+  <div class="sheet" id="alarmSheet" hidden>
+    <div class="sheet-bar">
+      <button class="icon" data-close>✕</button>
+      <b>Recordatorio</b>
+      <button class="btn small primary" id="aSave">Guardar</button>
+    </div>
+    <div class="controls">
+      <input type="time" id="aTime" class="bigtime" value="08:00">
+      <div class="field">
+        <label for="aText">Pregunta / frase</label>
+        <input id="aText" placeholder="¿Tomas suficiente agua?">
+        <div class="presets" id="aPresets"></div>
+      </div>
+      <div class="field">
+        <label>Días</label>
+        <div class="days" id="aDays"></div>
+      </div>
+      <div class="field">
+        <label for="aSound">Sonido</label>
+        <select id="aSound"></select>
+      </div>
+    </div>
+  </div>
+
+  <!-- ALARMA SONANDO -->
+  <div class="ring" id="ring" hidden>
+    <img id="ringImg" alt="">
+    <div class="ring-box">
+      <p class="ring-time" id="ringTime"></p>
+      <p class="ring-text" id="ringText"></p>
+      <div class="row gap">
+        <button class="btn" id="ringSnooze">Posponer 5 min</button>
+        <button class="btn primary" id="ringDone">Listo ✓</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="phrases.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

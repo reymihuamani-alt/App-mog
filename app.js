@@ -6,6 +6,10 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 
 const FONT = '"Helvetica Neue", Helvetica, Arial, system-ui, sans-serif';
 const DAY_LABELS = ["D", "L", "M", "M", "J", "V", "S"];
 
+// En la app de Android (Capacitor) se usan las alarmas y el compartir del sistema.
+const NATIVE = !!window.Capacitor?.isNativePlatform?.();
+const Cap = window.Capacitor?.Plugins || {};
+
 /* ---------------- Almacenamiento ---------------- */
 
 const DB = (() => {
@@ -365,7 +369,36 @@ async function currentBlob() {
   return canvasBlob($("#canvas"));
 }
 
+function blobToBase64(blob) {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(String(r.result).split(",")[1]);
+    r.onerror = () => rej(r.error);
+    r.readAsDataURL(blob);
+  });
+}
+
+// Android: guarda en Documentos/Mog o abre el menú de compartir del sistema.
+async function nativeSave(blob, filename) {
+  try {
+    await Cap.Filesystem.writeFile({ path: "Mog/" + filename, data: await blobToBase64(blob), directory: "DOCUMENTS", recursive: true });
+    toast("Guardado en Documentos/Mog ✓", 3000);
+  } catch (e) {
+    console.warn(e);
+    await nativeShare(blob, filename);
+  }
+}
+async function nativeShare(blob, filename) {
+  try {
+    const r = await Cap.Filesystem.writeFile({ path: filename, data: await blobToBase64(blob), directory: "CACHE" });
+    await Cap.Share.share({ title: "Mog", files: [r.uri] });
+  } catch (e) {
+    if (!/cancel/i.test(e?.message || "")) toast("No se pudo compartir: " + (e?.message || e), 3500);
+  }
+}
+
 function downloadBlob(blob, name) {
+  if (NATIVE) return nativeSave(blob, `mog-${name}.jpg`);
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = `mog-${name}.jpg`;
@@ -374,6 +407,7 @@ function downloadBlob(blob, name) {
 }
 
 async function shareBlob(blob, name) {
+  if (NATIVE) return nativeShare(blob, `mog-${name}.jpg`);
   const file = new File([blob], `mog-${name}.jpg`, { type: "image/jpeg" });
   if (navigator.canShare && navigator.canShare({ files: [file] })) {
     try { await navigator.share({ files: [file] }); } catch {}
@@ -550,12 +584,14 @@ async function makeVideo() {
 
 const videoExt = () => (vo.blob.type === "video/mp4" ? "mp4" : "webm");
 $("#voDownload").addEventListener("click", () => {
+  if (NATIVE) return nativeSave(vo.blob, `mog-${vo.rec.id}.${videoExt()}`);
   const a = document.createElement("a");
   a.href = vo.url;
   a.download = `mog-${vo.rec.id}.${videoExt()}`;
   a.click();
 });
 $("#voShare").addEventListener("click", async () => {
+  if (NATIVE) return nativeShare(vo.blob, `mog-${vo.rec.id}.${videoExt()}`);
   const file = new File([vo.blob], `mog-${vo.rec.id}.${videoExt()}`, { type: vo.blob.type });
   if (navigator.canShare?.({ files: [file] })) {
     try { await navigator.share({ files: [file] }); } catch {}
@@ -856,11 +892,22 @@ $("#videoInput").addEventListener("change", (e) => {
 
 const notifSupported = "Notification" in window;
 
-function updatePermBox() {
+async function updatePermBox() {
+  if (NATIVE) {
+    try { $("#permBox").hidden = (await Cap.LocalNotifications.checkPermissions()).display === "granted"; } catch {}
+    return;
+  }
   $("#permBox").hidden = !notifSupported || Notification.permission === "granted";
 }
 
 $("#permBtn").addEventListener("click", async () => {
+  if (NATIVE) {
+    const r = await Cap.LocalNotifications.requestPermissions();
+    await ensureExactAlarms();
+    updatePermBox();
+    scheduleNative();
+    return toast(r.display === "granted" ? "Notificaciones activadas ✓" : "Permiso denegado: actívalo en Ajustes del teléfono", 3500);
+  }
   if (!notifSupported) return toast("Tu navegador no soporta notificaciones");
   const r = await Notification.requestPermission();
   updatePermBox();
@@ -889,6 +936,7 @@ async function photoDataUrl(photo, maxW, square = false) {
 }
 
 async function notify(body, photo = null) {
+  if (NATIVE) return; // en Android la notificación la programa el sistema (scheduleNative)
   if (!notifSupported || Notification.permission !== "granted") return;
   const opts = { body, icon: "icons/icon-192.png", badge: "icons/badge-96.png", tag: "mog-" + Date.now(), vibrate: [300, 150, 300], requireInteraction: true };
   if (photo) {
@@ -904,6 +952,14 @@ async function notify(body, photo = null) {
 }
 
 $("#testNotif").addEventListener("click", async () => {
+  if (NATIVE) {
+    if ((await Cap.LocalNotifications.requestPermissions()).display !== "granted") return toast("Primero permite las notificaciones");
+    await Cap.LocalNotifications.schedule({ notifications: [{
+      id: 999999, title: "Mog", body: "¿Tomas suficiente agua?", channelId: CHANNEL,
+      schedule: { at: new Date(Date.now() + 5000), allowWhileIdle: true }, extra: { test: true },
+    }] });
+    return toast("Llegará en 5 s: puedes cerrar Mog para probar", 3500);
+  }
   if (!notifSupported) return toast("Tu navegador no soporta notificaciones");
   if (Notification.permission !== "granted") await Notification.requestPermission();
   updatePermBox();
@@ -915,7 +971,101 @@ $("#testNotif").addEventListener("click", async () => {
 
 let alarms = store.get("alarms", []);
 let snoozes = store.get("snoozes", []);
-const saveAlarms = () => { store.set("alarms", alarms); store.set("snoozes", snoozes); };
+const saveAlarms = () => {
+  store.set("alarms", alarms);
+  store.set("snoozes", snoozes);
+  if (NATIVE) scheduleNative();
+};
+
+/* Alarmas del sistema Android: suenan aunque Mog esté cerrada */
+const CHANNEL = "mog-alarmas";
+let nativeTimer = 0;
+
+function scheduleNative() {
+  clearTimeout(nativeTimer);
+  nativeTimer = setTimeout(async () => {
+    const LN = Cap.LocalNotifications;
+    try {
+      const pending = (await LN.getPending()).notifications.filter((n) => n.id !== 999999);
+      if (pending.length) await LN.cancel({ notifications: pending.map((n) => ({ id: n.id })) });
+      const list = [];
+      let id = 1;
+      for (const a of alarms) {
+        if (!a.on) continue;
+        const [hour, minute] = a.time.split(":").map(Number);
+        const days = a.days.length === 7 ? [null] : a.days;
+        for (const d of days) {
+          list.push({
+            id: id++, title: "Mog ⏰ " + a.time, body: a.text, channelId: CHANNEL, autoCancel: true,
+            schedule: { on: d == null ? { hour, minute } : { weekday: d + 1, hour, minute }, allowWhileIdle: true },
+            extra: { alarmId: a.id },
+          });
+        }
+      }
+      snoozes = snoozes.filter((x) => x.at > Date.now());
+      store.set("snoozes", snoozes);
+      snoozes.forEach((x, i) =>
+        list.push({
+          id: 900000 + i, title: "Mog ⏰", body: x.text, channelId: CHANNEL, autoCancel: true,
+          schedule: { at: new Date(x.at), allowWhileIdle: true },
+          extra: { snooze: { text: x.text, audioId: x.audioId, photoId: x.photoId } },
+        })
+      );
+      if (list.length) await LN.schedule({ notifications: list });
+    } catch (e) {
+      console.warn(e);
+      toast("No se pudieron programar las alarmas: " + (e?.message || e), 4000);
+    }
+  }, 300);
+}
+
+async function ensureExactAlarms() {
+  try {
+    const LN = Cap.LocalNotifications;
+    if ((await LN.checkExactNotificationSetting()).exact_alarm !== "granted") {
+      toast("Permite “Alarmas y recordatorios” para que suenen a la hora exacta", 4500);
+      await LN.changeExactNotificationSetting();
+    }
+  } catch {}
+}
+
+// Abre la pantalla de alarma (imagen + audio) para una notificación de Mog.
+function ringFromNotification(n) {
+  const ex = n?.extra || {};
+  if (ex.test) return;
+  const a = (ex.alarmId && alarms.find((x) => x.id === ex.alarmId)) || ex.snooze || { text: n?.body || "", audioId: PHOTO_AUDIO };
+  fire(a, { test: true });
+}
+
+async function initNative() {
+  const LN = Cap.LocalNotifications;
+  try {
+    await LN.createChannel({
+      id: CHANNEL, name: "Alarmas de Mog", description: "Recordatorios y alarmas",
+      importance: 5, visibility: 1, vibration: true, lights: true, lightColor: "#ef3b2d",
+    });
+  } catch {}
+  // Al tocar la notificación (también si Mog estaba cerrada)
+  LN.addListener("localNotificationActionPerformed", (ev) => ringFromNotification(ev.notification));
+  // Si Mog está abierta cuando llega la hora
+  LN.addListener("localNotificationReceived", (n) => ringFromNotification(n));
+
+  // Botón "atrás" de Android: cierra la ventana abierta antes de salir
+  Cap.App?.addListener("backButton", () => {
+    if (!$("#ring").hidden) return;
+    if (!$("#videoOut").hidden) return closeVideoOut();
+    const open = [...document.querySelectorAll(".sheet")].filter((x) => !x.hidden).pop();
+    if (open) return open.querySelector("[data-close]")?.click();
+    if (!$("#view-gallery").classList.contains("active")) return $('[data-view="gallery"]').click();
+    Cap.App.minimizeApp();
+  });
+
+  $("#alarmHint").textContent = "Las alarmas suenan aunque Mog esté cerrada. Al tocar la notificación se abre tu imagen con su audio.";
+  if ((await LN.checkPermissions()).display !== "granted") await LN.requestPermissions();
+  await ensureExactAlarms();
+  updatePermBox();
+  scheduleNative();
+}
 
 function daysText(days) {
   if (days.length === 7) return "Todos los días";
@@ -1103,6 +1253,7 @@ async function fire(a, { test = false } = {}) {
 }
 
 function stopRing() {
+  if (NATIVE) Cap.LocalNotifications.removeAllDeliveredNotifications().catch(() => {});
   beeper.stop();
   player.stop();
   $("#ring").hidden = true;
@@ -1119,6 +1270,7 @@ $("#ringSnooze").addEventListener("click", () => {
 });
 
 function tick() {
+  if (NATIVE) return; // en Android avisa el sistema
   const now = new Date();
   const hhmm = now.toTimeString().slice(0, 5);
   const today = now.toDateString();
@@ -1165,6 +1317,7 @@ $("#keyInput").addEventListener("change", (e) => {
   await refreshAudios();
   await refreshGallery();
   refreshAlarms();
+  if (NATIVE) return initNative();
   tick();
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 })();

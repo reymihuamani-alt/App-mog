@@ -14,7 +14,17 @@ App móvil (PWA) para subir fotos y ponerles frases con el estilo de los videos 
 - Recordatorios / alarmas con notificación, vibración, sonido y pantalla de alarma con una de tus fotos. Botón “Posponer 5 min”.
 - Funciona sin internet y todo se guarda solo en tu teléfono.
 
-## Cómo usarla en el celular
+## App de Android (APK) — recomendada
+Con el APK las alarmas suenan **aunque Mog esté cerrada** (usa las alarmas del sistema).
+
+- Descarga: https://github.com/reymihuamani-alt/App-mog/releases/download/apk/mog.apk
+- GitHub lo vuelve a compilar solo en cada cambio (`.github/workflows/android.yml`).
+  Siempre se firma con la misma clave (`ci/debug.keystore`), así cada versión nueva se instala
+  encima de la anterior sin borrar tus fotos ni alarmas.
+- Compilar a mano: `npm install && npm run android:prepare && cd android && ./gradlew assembleDebug`
+  (requiere Java 21 y el SDK de Android).
+
+## Versión web (PWA)
 Necesita estar publicada en HTTPS. La forma más fácil es GitHub Pages:
 1. En GitHub: **Settings → Pages → Branch** → elige la rama y la carpeta `/ (root)` → Save.
 2. Abre el enlace que te da GitHub en el celular.
@@ -23,6 +33,6 @@ Necesita estar publicada en HTTPS. La forma más fácil es GitHub Pages:
 Para probar en la computadora: `python3 -m http.server` y abre `http://localhost:8000`.
 
 ## Limitaciones
-- Las alarmas suenan mientras la app está abierta o en segundo plano; si el sistema la cierra, no sonará.
-  Para alarmas 100% confiables con la app cerrada hay que empaquetarla como app nativa (p. ej. con Capacitor).
+- En la versión web, las alarmas solo suenan con la app abierta. Usa el APK para alarmas con la app cerrada.
+- La versión web y el APK guardan sus datos por separado (fotos, audios y alarmas no se pasan solos).
 - En iPhone las notificaciones web solo funcionan si la app está agregada a la pantalla de inicio (iOS 16.4+).

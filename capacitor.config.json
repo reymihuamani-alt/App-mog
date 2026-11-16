@@ -1,0 +1,16 @@
+{
+  "appId": "io.github.reymihuamani.mog",
+  "appName": "Mog",
+  "webDir": "www",
+  "backgroundColor": "#0b0b0c",
+  "android": {
+    "backgroundColor": "#0b0b0c",
+    "adjustMarginsForEdgeToEdge": "auto"
+  },
+  "plugins": {
+    "LocalNotifications": {
+      "smallIcon": "ic_stat_mog",
+      "iconColor": "#ef3b2d"
+    }
+  }
+}

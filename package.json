@@ -1,0 +1,22 @@
+{
+  "name": "mog",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Mog: galería de frases con audio, video y alarmas",
+  "scripts": {
+    "build:www": "node scripts/build-www.mjs",
+    "android:prepare": "npm run build:www && npx cap add android && npx cap sync android && node scripts/patch-android.mjs",
+    "android:sync": "npm run build:www && npx cap sync android && node scripts/patch-android.mjs"
+  },
+  "dependencies": {
+    "@capacitor/android": "7.6.10",
+    "@capacitor/app": "7.1.2",
+    "@capacitor/core": "7.6.10",
+    "@capacitor/filesystem": "7.1.9",
+    "@capacitor/local-notifications": "7.0.7",
+    "@capacitor/share": "7.0.4"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "7.6.10"
+  }
+}

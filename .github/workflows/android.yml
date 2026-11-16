@@ -33,10 +33,6 @@ jobs:
       - name: Generar proyecto Android
         run: npm run android:prepare
 
-      # Siempre la misma firma: así cada APK nuevo se instala encima del anterior sin borrar tus datos.
-      - name: Usar firma fija
-        run: mkdir -p ~/.android && cp ci/debug.keystore ~/.android/debug.keystore
-
       - name: Compilar APK
         working-directory: android
         run: ./gradlew assembleDebug --no-daemon

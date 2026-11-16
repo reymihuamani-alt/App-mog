@@ -145,6 +145,8 @@
         <button class="btn" id="eDownload">Descargar</button>
         <button class="btn" id="eShare">Compartir</button>
       </div>
+      <button class="btn wide primary" id="eVideo">🎬 Guardar como video</button>
+      <label class="check row"><input type="checkbox" id="eMotion"> Zoom suave en el video</label>
     </div>
   </div>
 
@@ -170,6 +172,28 @@
         <input id="tName" maxlength="60">
       </div>
       <p class="hint">Solo se guarda el audio del recorte; el video no ocupa espacio en tu teléfono.</p>
+    </div>
+  </div>
+
+  <!-- CREAR VIDEO -->
+  <div class="sheet" id="videoOut" hidden>
+    <div class="sheet-bar">
+      <button class="icon" id="voClose">✕</button>
+      <b>Video</b>
+      <span style="width:44px"></span>
+    </div>
+    <div class="vo-progress" id="voProgress">
+      <p class="vo-title">Creando video…</p>
+      <div class="trim-bar"><i id="voBar" style="left:0;width:0"></i></div>
+      <p class="hint" id="voInfo">Mantén la pantalla encendida y Mog abierta.</p>
+    </div>
+    <div class="preview" id="voPreview" hidden><video id="voVideo" playsinline controls loop></video></div>
+    <div class="controls" id="voActions" hidden>
+      <p class="hint" id="voMeta"></p>
+      <div class="row gap">
+        <button class="btn" id="voDownload">Descargar</button>
+        <button class="btn primary" id="voShare">Compartir</button>
+      </div>
     </div>
   </div>
 

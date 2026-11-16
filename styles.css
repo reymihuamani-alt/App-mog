@@ -225,3 +225,8 @@ html, body { max-width: 100%; overflow-x: hidden; }
 .ring-text.long { font-size: 22px; }
 .ring.has-img .ring-text.long { font-size: 15px; }
 @media (min-width: 700px) { .grid { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
+
+/* Crear video */
+.vo-progress { padding: 40px 24px; display: grid; gap: 14px; text-align: center; }
+.vo-title { font-size: 22px; font-weight: 800; margin: 0; }
+#voVideo { max-width: 100%; max-height: 60dvh; border-radius: 8px; background: #000; display: block; }

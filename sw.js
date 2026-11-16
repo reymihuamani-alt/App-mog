@@ -1,7 +1,7 @@
-const CACHE = "mog-v4";
+const CACHE = "mog-v5";
 const SHELL = [
   "./", "index.html", "styles.css", "app.js", "phrases.js", "manifest.webmanifest",
-  "icons/icon.svg", "icons/icon-192.png", "icons/icon-512.png",
+  "icons/icon.svg", "icons/icon-192.png", "icons/icon-512.png", "icons/badge-96.png",
 ];
 
 self.addEventListener("install", (e) => {

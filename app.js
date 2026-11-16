@@ -401,6 +401,168 @@ $("#eVideoInput").addEventListener("change", (e) => {
 $("#eDownload").addEventListener("click", async () => downloadBlob(await currentBlob(), ed.rec.id));
 $("#eShare").addEventListener("click", async () => shareBlob(await currentBlob(), ed.rec.id));
 
+/* ---------------- Guardar como video ---------------- */
+
+const VIDEO_W = 1080, VIDEO_H = 1920; // formato vertical 9:16 (TikTok, estados, reels)
+
+function videoMime() {
+  const opts = [
+    "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
+    "video/mp4;codecs=avc1,mp4a",
+    "video/mp4",
+    "video/webm;codecs=vp9,opus",
+    "video/webm;codecs=vp8,opus",
+    "video/webm",
+  ];
+  return opts.find((m) => window.MediaRecorder && MediaRecorder.isTypeSupported(m)) || "";
+}
+
+async function decodeAudioRecord(rec, ctx) {
+  const buf = await ctx.decodeAudioData(await rec.blob.arrayBuffer());
+  if (rec.start == null) return buf;
+  // audio guardado como recorte de video sin convertir: tomar solo ese pedazo
+  const sr = buf.sampleRate;
+  const s0 = Math.floor(rec.start * sr), s1 = Math.min(buf.length, Math.floor(rec.end * sr));
+  const out = ctx.createBuffer(buf.numberOfChannels, s1 - s0, sr);
+  for (let c = 0; c < buf.numberOfChannels; c++) out.copyToChannel(buf.getChannelData(c).subarray(s0, s1), c);
+  return out;
+}
+
+const vo = { rec: null, blob: null, url: null, cancel: null };
+
+function closeVideoOut() {
+  vo.cancel?.();
+  $("#voVideo").pause();
+  $("#voVideo").removeAttribute("src");
+  if (vo.url) { URL.revokeObjectURL(vo.url); vo.url = null; }
+  $("#videoOut").hidden = true;
+}
+$("#voClose").addEventListener("click", closeVideoOut);
+
+async function makeVideo() {
+  const audioId = $("#eAudio").value;
+  if (!audioId) return toast("Primero elige un audio para la foto", 3000);
+  const mime = videoMime();
+  if (!mime) return toast("Tu navegador no puede crear videos", 3500);
+  player.stop();
+  $("#eAudioPlay").textContent = "▶";
+
+  // Imagen con la frase tal como está ahora en el editor
+  const still = document.createElement("canvas");
+  renderTo(still, ed.img, ed.opts);
+
+  // Fondo: la misma imagen ampliada, desenfocada y oscura
+  const bg = document.createElement("canvas");
+  bg.width = VIDEO_W; bg.height = VIDEO_H;
+  const bctx = bg.getContext("2d");
+  const cover = Math.max(VIDEO_W / still.width, VIDEO_H / still.height);
+  bctx.filter = "blur(40px) brightness(0.45)";
+  bctx.drawImage(still, (VIDEO_W - still.width * cover) / 2, (VIDEO_H - still.height * cover) / 2, still.width * cover, still.height * cover);
+  bctx.filter = "none";
+
+  const fit = Math.min(VIDEO_W / still.width, VIDEO_H / still.height);
+  const fw = still.width * fit, fh = still.height * fit;
+  const motion = $("#eMotion").checked;
+
+  const out = document.createElement("canvas");
+  out.width = VIDEO_W; out.height = VIDEO_H;
+  const octx = out.getContext("2d");
+
+  $("#voProgress").hidden = false;
+  $("#voPreview").hidden = $("#voActions").hidden = true;
+  $("#voBar").style.width = "0";
+  $("#voInfo").textContent = "Mantén la pantalla encendida y Mog abierta.";
+  $("#videoOut").hidden = false;
+
+  const actx = new (window.AudioContext || window.webkitAudioContext)();
+  let raf = 0, src = null, recorder = null, cancelled = false;
+  vo.cancel = () => {
+    cancelled = true;
+    cancelAnimationFrame(raf);
+    try { src?.stop(); } catch {}
+    if (recorder?.state === "recording") recorder.stop();
+    actx.close().catch(() => {});
+    vo.cancel = null;
+  };
+
+  try {
+    const rec = await DB.get("audios", audioId);
+    const buffer = await decodeAudioRecord(rec, actx);
+    const dur = buffer.duration;
+    if (cancelled) return;
+
+    const dest = actx.createMediaStreamDestination();
+    src = actx.createBufferSource();
+    src.buffer = buffer;
+    src.connect(dest);
+    src.connect(actx.destination); // para escucharlo mientras se crea
+
+    const drawFrame = (t) => {
+      octx.drawImage(bg, 0, 0);
+      const z = motion ? 1 + 0.06 * Math.min(1, t / dur) : 1;
+      const w = fw * z, h = fh * z;
+      octx.drawImage(still, (VIDEO_W - w) / 2, (VIDEO_H - h) / 2, w, h);
+    };
+    drawFrame(0);
+
+    const stream = new MediaStream([...out.captureStream(30).getVideoTracks(), ...dest.stream.getAudioTracks()]);
+    recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 6_000_000, audioBitsPerSecond: 160_000 });
+    const chunks = [];
+    recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+    const done = new Promise((r) => (recorder.onstop = r));
+
+    await actx.resume();
+    recorder.start(250);
+    const t0 = actx.currentTime;
+    src.start();
+    src.onended = () => setTimeout(() => recorder.state === "recording" && recorder.stop(), 250);
+
+    const loop = () => {
+      const t = actx.currentTime - t0;
+      drawFrame(t);
+      $("#voBar").style.width = Math.min(100, (t / dur) * 100) + "%";
+      $("#voInfo").textContent = `${fmtTime(t)} de ${fmtTime(dur)} · mantén la pantalla encendida`;
+      if (recorder.state === "recording") raf = requestAnimationFrame(loop);
+    };
+    loop();
+
+    await done;
+    cancelAnimationFrame(raf);
+    if (cancelled) return;
+    actx.close().catch(() => {});
+    vo.cancel = null;
+
+    const type = mime.split(";")[0];
+    vo.blob = new Blob(chunks, { type });
+    vo.rec = ed.rec;
+    vo.url = URL.createObjectURL(vo.blob);
+    $("#voVideo").src = vo.url;
+    $("#voMeta").textContent = `${fmtTime(dur)} · ${(vo.blob.size / 1048576).toFixed(1)} MB · ${type === "video/mp4" ? "MP4" : "WEBM"} vertical 1080×1920`;
+    $("#voProgress").hidden = true;
+    $("#voPreview").hidden = $("#voActions").hidden = false;
+  } catch (e) {
+    console.warn(e);
+    vo.cancel?.();
+    $("#videoOut").hidden = true;
+    if (!cancelled) toast("No se pudo crear el video: " + e.message, 4000);
+  }
+}
+
+const videoExt = () => (vo.blob.type === "video/mp4" ? "mp4" : "webm");
+$("#voDownload").addEventListener("click", () => {
+  const a = document.createElement("a");
+  a.href = vo.url;
+  a.download = `mog-${vo.rec.id}.${videoExt()}`;
+  a.click();
+});
+$("#voShare").addEventListener("click", async () => {
+  const file = new File([vo.blob], `mog-${vo.rec.id}.${videoExt()}`, { type: vo.blob.type });
+  if (navigator.canShare?.({ files: [file] })) {
+    try { await navigator.share({ files: [file] }); } catch {}
+  } else $("#voDownload").click();
+});
+$("#eVideo").addEventListener("click", makeVideo);
+
 /* ---------------- Frases con IA ---------------- */
 
 let topic = Object.keys(PHRASES)[0];
@@ -705,9 +867,35 @@ $("#permBtn").addEventListener("click", async () => {
   toast(r === "granted" ? "Notificaciones activadas ✓" : "Permiso denegado");
 });
 
-async function notify(body) {
+// Miniatura de la foto como data URL (las notificaciones no pueden leer las fotos guardadas).
+async function photoDataUrl(photo, maxW, square = false) {
+  try {
+    const img = await loadImage(photo.rendered || photo.blob);
+    const c = document.createElement("canvas");
+    const ctx = c.getContext("2d");
+    if (square) {
+      const s = Math.min(img.naturalWidth, img.naturalHeight);
+      c.width = c.height = maxW;
+      ctx.drawImage(img, (img.naturalWidth - s) / 2, Math.max(0, (img.naturalHeight - s) * 0.45), s, s, 0, 0, maxW, maxW);
+    } else {
+      const k = Math.min(1, maxW / img.naturalWidth);
+      c.width = Math.round(img.naturalWidth * k);
+      c.height = Math.round(img.naturalHeight * k);
+      ctx.drawImage(img, 0, 0, c.width, c.height);
+    }
+    URL.revokeObjectURL(img.src);
+    return c.toDataURL("image/jpeg", 0.82);
+  } catch { return null; }
+}
+
+async function notify(body, photo = null) {
   if (!notifSupported || Notification.permission !== "granted") return;
-  const opts = { body, icon: "icons/icon-192.png", badge: "icons/icon-192.png", tag: "mog-" + Date.now(), vibrate: [300, 150, 300], requireInteraction: true };
+  const opts = { body, icon: "icons/icon-192.png", badge: "icons/badge-96.png", tag: "mog-" + Date.now(), vibrate: [300, 150, 300], requireInteraction: true };
+  if (photo) {
+    opts.icon = (await photoDataUrl(photo, 192, true)) || opts.icon;
+    const big = await photoDataUrl(photo, 720);
+    if (big) opts.image = big; // Android muestra la imagen grande al desplegar la notificación
+  }
   try {
     const reg = await navigator.serviceWorker?.getRegistration();
     if (reg) return reg.showNotification("Mog", opts);
@@ -719,7 +907,7 @@ $("#testNotif").addEventListener("click", async () => {
   if (!notifSupported) return toast("Tu navegador no soporta notificaciones");
   if (Notification.permission !== "granted") await Notification.requestPermission();
   updatePermBox();
-  if (Notification.permission === "granted") { notify("¿Tomas suficiente agua?"); toast("Notificación enviada"); }
+  if (Notification.permission === "granted") { notify("¿Tomas suficiente agua?", photos[0]); toast("Notificación enviada"); }
   else toast("Primero permite las notificaciones");
 });
 
@@ -892,13 +1080,13 @@ document.addEventListener("pointerdown", () => {
 let ringing = null;
 
 async function fire(a, { test = false } = {}) {
-  if (!test) notify(a.text);
-  navigator.vibrate?.([400, 200, 400, 200, 400]);
-  if (ringing) return;
   // Imagen elegida; si se borró o es "al azar", una de la galería.
   const pick =
     (a.photoId && photos.find((p) => p.id === a.photoId)) ||
     (photos.length ? photos[Math.floor(Math.random() * photos.length)] : null);
+  if (!test) notify(a.text, pick);
+  navigator.vibrate?.([400, 200, 400, 200, 400]);
+  if (ringing) return;
   ringing = { ...a, photoId: pick?.id || null };
   const src = pick ? blobUrl(pick.rendered || pick.blob) : "";
   $("#ringImg").hidden = $("#ringBg").hidden = !pick;

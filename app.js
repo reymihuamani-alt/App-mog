@@ -16,10 +16,12 @@ const DB = (() => {
   let dbp;
   const open = () =>
     (dbp ||= new Promise((res, rej) => {
-      const r = indexedDB.open("mog", 1);
+      const r = indexedDB.open("mog", 2);
       r.onupgradeneeded = () => {
-        r.result.createObjectStore("photos", { keyPath: "id" });
-        r.result.createObjectStore("audios", { keyPath: "id" });
+        // v1: fotos y audios · v2: proyectos de reels y videos importados
+        for (const name of ["photos", "audios", "projects", "media"]) {
+          if (!r.result.objectStoreNames.contains(name)) r.result.createObjectStore(name, { keyPath: "id" });
+        }
       };
       r.onsuccess = () => res(r.result);
       r.onerror = () => rej(r.error);
@@ -83,7 +85,7 @@ $$("[data-close]").forEach((b) => b.addEventListener("click", () => {
 
 /* ---------------- Navegación ---------------- */
 
-const TITLES = { gallery: "Galería", audio: "Audio", alarms: "Alarmas", settings: "Ajustes" };
+const TITLES = { gallery: "Galería", reels: "Reels", audio: "Audio", alarms: "Alarmas", settings: "Ajustes" };
 $$(".tabs button").forEach((b) =>
   b.addEventListener("click", () => {
     const v = b.dataset.view;

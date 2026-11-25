@@ -11,6 +11,7 @@
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="studio.css">
 </head>
 <body>
   <header class="top">
@@ -28,6 +29,21 @@
           <p>Toca <b>+</b> para subir imágenes desde tu galería y ponerles frases.</p>
         </div>
       </div>
+    </section>
+
+    <!-- REELS -->
+    <section class="view" id="view-reels">
+      <div class="reels-hero">
+        <p class="rh-kicker">Editor de video</p>
+        <p class="rh-title">Crea reels para TikTok, Instagram, YouTube y Facebook</p>
+        <div class="rh-plats"><span>TikTok</span><span>Reels</span><span>Shorts</span><span>Facebook</span></div>
+      </div>
+      <div class="row gap">
+        <button class="btn primary" id="newReel">＋ Nuevo reel</button>
+        <button class="btn ai" id="autoReel">✨ Reel automático</button>
+      </div>
+      <div class="projects" id="projects"></div>
+      <p class="hint" id="projectsEmpty">Aún no tienes reels. Crea uno con tus fotos, videos y audios, o deja que Mog arme uno automático con música.</p>
     </section>
 
     <!-- AUDIO -->
@@ -81,6 +97,7 @@
 
   <nav class="tabs">
     <button data-view="gallery" class="on"><span>▦</span>Galería</button>
+    <button data-view="reels"><span>🎬</span>Reels</button>
     <button data-view="audio"><span>♫</span>Audio</button>
     <button data-view="alarms"><span>⏰</span>Alarmas</button>
     <button data-view="settings"><span>⚙</span>Ajustes</button>
@@ -175,6 +192,136 @@
     </div>
   </div>
 
+  <!-- EDITOR DE REELS -->
+  <div class="sheet studio" id="studio" hidden>
+    <div class="sheet-bar st-bar">
+      <button class="icon" id="stClose" data-close aria-label="Cerrar">✕</button>
+      <button class="st-title" id="stRename"><b id="stName">Reel</b><small id="stFmt"></small></button>
+      <button class="icon" id="stUndo" aria-label="Deshacer">↶</button>
+      <button class="icon" id="stRedo" aria-label="Rehacer">↷</button>
+      <button class="btn small primary" id="stExport">Exportar</button>
+    </div>
+    <div class="st-stage" id="stStage">
+      <div class="st-canvas-wrap" id="stWrap">
+        <canvas id="stCanvas"></canvas>
+        <div class="st-safe" id="stSafe" hidden></div>
+        <div class="st-empty" id="stEmpty">Toca <b>＋ Medios</b> para agregar fotos o videos</div>
+      </div>
+    </div>
+    <div class="st-transport">
+      <span class="st-time" id="stTime">0:00.0 / 0:00.0</span>
+      <button class="st-play" id="stPlay" aria-label="Reproducir">▶</button>
+      <div class="st-zoom">
+        <button class="icon" id="stZoomOut" aria-label="Alejar línea de tiempo">－</button>
+        <button class="icon" id="stZoomIn" aria-label="Acercar línea de tiempo">＋</button>
+      </div>
+    </div>
+    <div class="st-timeline" id="stTimeline">
+      <div class="st-tracks" id="stTracks">
+        <div class="st-row st-row-clips" id="stClips"></div>
+        <div class="st-row st-row-texts" id="stTexts"></div>
+        <div class="st-row st-row-music" id="stMusic"></div>
+      </div>
+    </div>
+    <div class="st-playhead"></div>
+    <div class="st-panel" id="stPanel" hidden></div>
+    <div class="st-tools" id="stTools"></div>
+  </div>
+
+  <!-- AGREGAR MEDIOS -->
+  <div class="sheet" id="stAdd" hidden>
+    <div class="sheet-bar">
+      <button class="icon" data-close>✕</button>
+      <b>Agregar al reel</b>
+      <button class="btn small primary" id="stAddDone">Agregar</button>
+    </div>
+    <div class="controls">
+      <div class="row gap">
+        <label class="btn"><input type="file" accept="video/*" multiple id="stVideoIn" hidden>🎬 Video del teléfono</label>
+        <label class="btn"><input type="file" accept="image/*" multiple id="stPhotoIn" hidden>🖼 Foto del teléfono</label>
+      </div>
+      <p class="hint" id="stAddInfo">O elige fotos de tu galería de Mog (en el orden en que las toques):</p>
+      <div class="st-pickgrid" id="stPick"></div>
+    </div>
+  </div>
+
+  <!-- NUEVO REEL: FORMATO -->
+  <div class="sheet" id="fmtSheet" hidden>
+    <div class="sheet-bar">
+      <button class="icon" data-close>✕</button>
+      <b id="fmtTitle">¿Para dónde es tu reel?</b>
+      <span style="width:44px"></span>
+    </div>
+    <div class="controls">
+      <div class="fmt-grid" id="fmtGrid"></div>
+      <div id="autoOpts" hidden>
+        <div class="field">
+          <label>Fotos (toca en orden)</label>
+          <div class="st-pickgrid" id="autoPick"></div>
+        </div>
+        <div class="field">
+          <label for="autoAudio">Música</label>
+          <select id="autoAudio"></select>
+        </div>
+        <div class="field">
+          <label for="autoHook">Gancho al inicio (opcional)</label>
+          <input id="autoHook" maxlength="80" placeholder="POV: decidiste cuidarte de verdad">
+          <div class="presets" id="autoHooks"></div>
+        </div>
+        <button class="btn wide primary" id="autoGo">✨ Crear reel automático</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- EXPORTAR Y PUBLICAR -->
+  <div class="sheet" id="publish" hidden>
+    <div class="sheet-bar">
+      <button class="icon" id="pubClose" data-close>✕</button>
+      <b>Exportar y publicar</b>
+      <span style="width:44px"></span>
+    </div>
+    <div class="controls">
+      <div id="pubSetup">
+        <div class="field">
+          <label>Calidad</label>
+          <div class="topics" id="pubQuality"></div>
+        </div>
+        <p class="hint" id="pubEst"></p>
+        <button class="btn wide primary" id="pubGo">🎬 Crear video</button>
+      </div>
+      <div id="pubProgress" hidden>
+        <p class="vo-title">Creando tu reel…</p>
+        <div class="trim-bar"><i id="pubBar" style="left:0;width:0"></i></div>
+        <p class="hint" id="pubInfo"></p>
+        <button class="btn wide" id="pubCancel">Cancelar</button>
+      </div>
+      <div id="pubResult" hidden>
+        <div class="preview"><video id="pubVideo" playsinline controls loop></video></div>
+        <p class="hint" id="pubMeta"></p>
+        <div class="row gap">
+          <button class="btn" id="pubDownload">Descargar</button>
+          <button class="btn primary" id="pubShare">Compartir</button>
+        </div>
+        <button class="btn wide" id="pubCover">🖼 Guardar portada</button>
+      </div>
+
+      <div class="pub-card">
+        <p class="pub-h">✍️ Descripción y hashtags</p>
+        <div class="topics" id="pubPlats"></div>
+        <input id="pubTopic" placeholder="Tema del video (ej. autocuidado, gym, motivación)">
+        <button class="btn wide ai" id="pubGen">✨ Generar descripción</button>
+        <textarea id="pubCaption" rows="6" placeholder="Aquí aparecerá tu descripción con hashtags"></textarea>
+        <button class="btn wide" id="pubCopy">Copiar descripción</button>
+      </div>
+
+      <div class="pub-card">
+        <p class="pub-h">💰 Antes de publicar (para poder monetizar)</p>
+        <ul class="checklist" id="pubCheck"></ul>
+        <p class="hint">Los requisitos de monetización cambian según la plataforma y el país: revísalos en el panel de creador de cada app.</p>
+      </div>
+    </div>
+  </div>
+
   <!-- CREAR VIDEO -->
   <div class="sheet" id="videoOut" hidden>
     <div class="sheet-bar">
@@ -245,5 +392,6 @@
 
   <script src="phrases.js"></script>
   <script src="app.js"></script>
+  <script src="studio.js"></script>
 </body>
 </html>

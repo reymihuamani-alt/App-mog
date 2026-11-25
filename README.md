@@ -13,6 +13,9 @@ Pestaña **Reels**: editor tipo CapCut para crear videos para TikTok, Instagram 
 - Clips: dividir, recortar, duración, velocidad (0.25x–3x), volumen, filtros, movimiento (zoom / paneo), llenar o encajar con fondo difuminado, duplicar, reordenar.
 - Transiciones: fundido, a negro, deslizar, zoom, flash, desenfoque y giro.
 - Textos: 7 estilos (caja, barra, rojo, blanco, amarillo, neón, simple), animaciones, tamaño, posición y tiempo.
+- **Subtítulos automáticos (CC):** Whisper reconoce la voz en el propio teléfono (sin clave ni costo; el modelo de 41–77 MB
+  se descarga una sola vez). Español, inglés, portugués o detección automática; estilos karaoke, amarillo, blanco, caja y rojo;
+  1, 3 o una frase por subtítulo; también puede transcribir la letra de la música.
 - Ganchos y llamados a la acción listos, zona segura de cada app, deshacer / rehacer y guardado automático.
 - Reel automático: elige fotos y una canción y Mog arma el reel con transiciones al ritmo de la duración.
 - Exportar en 720p o 1080p (MP4 cuando el teléfono lo permite), guardar portada, descripción con hashtags (con IA si hay clave) y checklist para poder monetizar.

@@ -31,7 +31,7 @@
   const FILTER_CSS = Object.fromEntries(FILTERS.map(([k, , css]) => [k, css]));
   const MOTIONS = [["none", "Ninguno"], ["in", "Zoom in"], ["out", "Zoom out"], ["left", "Paneo ←"], ["right", "Paneo →"]];
   const TRANS = [["none", "Corte"], ["fade", "Fundido"], ["black", "A negro"], ["slide", "Deslizar"], ["zoom", "Zoom"], ["flash", "Flash"], ["blur", "Desenfoque"], ["spin", "Giro"]];
-  const TSTYLES = [["box", "Caja"], ["bar", "Barra"], ["red", "ROJO"], ["white", "Blanco"], ["yellow", "Amarillo"], ["neon", "Neón"], ["plain", "Simple"]];
+  const TSTYLES = [["karaoke", "Karaoke"], ["box", "Caja"], ["bar", "Barra"], ["red", "ROJO"], ["white", "Blanco"], ["yellow", "Amarillo"], ["neon", "Neón"], ["plain", "Simple"]];
   const TANIMS = [["pop", "Pop"], ["fade", "Aparecer"], ["slide", "Subir"], ["type", "Máquina"], ["none", "Ninguna"]];
   const HOOKS = [
     "POV: decidiste cuidarte de verdad", "Nadie te dice esto, pero…", "3 hábitos que cambiaron mi vida",
@@ -307,6 +307,7 @@
 
   function drawText(g, tx, lt, W, H) {
     const fs = Math.round((W * tx.size) / 100);
+    const rawLt = lt;
     // En pausa (editando) el texto se ve completo; la animación solo corre al reproducir y exportar
     if (!st.playing) lt = Math.max(lt, 2);
     const ain = clamp(lt / 0.35, 0, 1);
@@ -339,9 +340,29 @@
       g.fillStyle = "#f3f8f1";
       g.fillRect(0, top - pad, W, lines.length * lh + pad * 2);
     }
+    // Karaoke: la palabra que se está diciendo se pinta en amarillo
+    const nWords = text.split(/\s+/).filter(Boolean).length;
+    const curWord = Math.floor(clamp(rawLt / Math.max(0.1, tx.end - tx.start), 0, 0.999) * nWords);
+    let wordIdx = 0;
     lines.forEach((l, i) => {
       const y = yOf(i);
       switch (tx.style) {
+        case "karaoke": {
+          g.textAlign = "left";
+          g.lineJoin = "round";
+          g.lineWidth = fs * 0.18;
+          g.strokeStyle = "#000";
+          let x = W / 2 - g.measureText(l).width / 2;
+          for (const w of l.split(" ")) {
+            g.strokeText(w, x, y);
+            g.fillStyle = wordIdx === curWord ? "#ffd60a" : "#fff";
+            g.fillText(w, x, y);
+            x += g.measureText(w + " ").width;
+            if (w) wordIdx++;
+          }
+          g.textAlign = "center";
+          break;
+        }
         case "box": {
           const w = g.measureText(l).width + fs * 0.7;
           g.fillStyle = "#fff";
@@ -555,7 +576,7 @@
     const texts = $("#stTexts");
     texts.innerHTML = "";
     for (const tx of st.p.texts) {
-      const b = el("div", "st-text" + (isSel("text", tx.id) ? " st-sel" : ""), "T " + tx.text);
+      const b = el("div", "st-text" + (tx.sub ? " sub" : "") + (isSel("text", tx.id) ? " st-sel" : ""), (tx.sub ? "CC " : "T ") + tx.text);
       b.style.left = pad + tx.start * pps + "px";
       b.style.width = Math.max(14, (tx.end - tx.start) * pps - 2) + "px";
       b.addEventListener("click", (ev) => { ev.stopPropagation(); select({ type: "text", id: tx.id }); });
@@ -721,7 +742,7 @@
       ];
     }
     return [
-      ["add", "＋", "Medios"], ["text", "T", "Texto"], ["music", "♫", "Música"], ["hooks", "🪝", "Ganchos"],
+      ["add", "＋", "Medios"], ["text", "T", "Texto"], ["subs", "CC", "Subtítulos"], ["music", "♫", "Música"], ["hooks", "🪝", "Ganchos"],
       ["format", "▭", "Formato"], ["safe", "◰", "Zona segura"], ["transAll", "⇄", "Transiciones"], ["filtersAll", "◐", "Filtros"],
     ];
   }
@@ -941,6 +962,7 @@
           label("Frases de Mog (en el cabezal)"),
           chips(pool.map((h) => [h, h]), null, (h) => addAt(h, clamp(st.t, 0, Math.max(0, T0 - 0.5)), Math.min(T0, st.t + 3), { style: "bar", anim: "fade", y: 0.5 }), true));
       }
+      case "subs": return subsPanel();
       case "edit": {
         const ta = document.createElement("textarea");
         ta.rows = 2;
@@ -999,6 +1021,180 @@
             mutate(() => { if (v === "in") m.fadeIn = !m.fadeIn; else m.fadeOut = !m.fadeOut; }).then(renderPanel)));
     }
     P.hidden = true;
+  }
+
+
+  /* ---------------- Subtítulos automáticos (Whisper en el teléfono) ---------------- */
+
+  const subOpts = Object.assign(
+    { source: "voice", lang: "spanish", model: "onnx-community/whisper-base", style: "karaoke", words: 3, y: 0.72 },
+    store.get("subOpts", {})
+  );
+  const saveSubOpts = () => store.set("subOpts", subOpts);
+  const decoded16k = new Map(); // id del video -> audio decodificado a 16 kHz
+  let subsWorker = null;
+  let subsBusy = false;
+
+  // Mezcla en una sola pista (16 kHz, mono) lo que se escucha en el reel: la voz de los videos o la música.
+  async function speechTrack(source) {
+    const T = total();
+    const SR = 16000;
+    const off = new OfflineAudioContext(1, Math.max(1, Math.ceil(T * SR)), SR);
+    let any = false;
+    if (source === "music") {
+      const m = st.p.music;
+      const rec = m && (await DB.get("audios", m.audioId));
+      if (!rec) return null;
+      const buf = await off.decodeAudioData(await rec.blob.arrayBuffer());
+      const src = off.createBufferSource();
+      src.buffer = buf;
+      src.connect(off.destination);
+      src.start(0, (rec.start || 0) + (m.offset || 0));
+      any = true;
+    } else {
+      for (const o of st.L) {
+        const c = o.c;
+        if (c.kind !== "video" || c.muted || c.volume <= 0) continue;
+        let buf = decoded16k.get(c.src);
+        if (buf === undefined) {
+          const m = await DB.get("media", c.src);
+          try { buf = m ? await off.decodeAudioData(await m.blob.arrayBuffer()) : null; } catch { buf = null; } // video sin audio
+          decoded16k.set(c.src, buf);
+        }
+        if (!buf) continue;
+        const src = off.createBufferSource();
+        src.buffer = buf;
+        src.playbackRate.value = c.speed;
+        src.connect(off.destination);
+        src.start(o.start, c.trimStart, Math.max(0.05, c.trimEnd - c.trimStart));
+        any = true;
+      }
+    }
+    if (!any) return null;
+    const r = await off.startRendering();
+    return r.getChannelData(0).slice();
+  }
+
+  const loudness = (a) => { let s = 0; for (let i = 0; i < a.length; i += 8) s += a[i] * a[i]; return Math.sqrt(s / Math.max(1, a.length / 8)); };
+
+  // Whisper a veces "inventa" frases en silencios o música (p. ej. créditos de Amara.org); se descartan.
+  const HALLUCINATION = /amara\.org|subt[ií]tulos? (realizados|por|hechos)|^[\W_]*$|^\[.*\]$|^\(.*\)$|♪/i;
+
+  function cleanChunks(chunks, T) {
+    const out = [];
+    let prev = "";
+    for (const ch of chunks) {
+      let [s, e] = ch.timestamp || [];
+      if (s == null) continue;
+      if (e == null || e <= s) e = Math.min(T, s + 3);
+      s = clamp(s, 0, T);
+      e = clamp(e, 0, T);
+      const text = (ch.text || "").replace(/\s+/g, " ").trim();
+      if (!text || e - s < 0.05 || HALLUCINATION.test(text) || text === prev) continue;
+      prev = text;
+      out.push({ text, start: s, end: e });
+    }
+    return out;
+  }
+
+  // Parte cada frase en subtítulos de N palabras y reparte el tiempo según el largo de cada parte.
+  function groupSubs(raw) {
+    const n = subOpts.words;
+    const res = [];
+    for (const r of raw) {
+      const words = r.text.split(" ").filter(Boolean);
+      const groups = [];
+      for (let i = 0; i < words.length; i += n) groups.push(words.slice(i, i + n).join(" "));
+      const chars = groups.reduce((a, g) => a + g.length + 1, 0);
+      let t = r.start;
+      for (const g of groups) {
+        const d = ((r.end - r.start) * (g.length + 1)) / chars;
+        res.push(newText(g, t, t + d, { sub: true, style: subOpts.style, anim: n === 1 ? "pop" : "none", size: n === 1 ? 9 : 6, y: subOpts.y }));
+        t += d;
+      }
+    }
+    return res;
+  }
+
+  function transcribe(audio, say) {
+    subsWorker ||= new Worker("subs-worker.js", { type: "module" });
+    return new Promise((resolve, reject) => {
+      const files = {};
+      subsWorker.onmessage = (e) => {
+        const m = e.data;
+        if (m.type === "download") {
+          files[m.file] = [m.loaded || 0, m.total || 0];
+          const vals = Object.values(files);
+          const l = vals.reduce((a, v) => a + v[0], 0), t = vals.reduce((a, v) => a + v[1], 0);
+          say(`Descargando el modelo de voz (solo la primera vez)… ${Math.round(l / 1e6)} de ${Math.max(1, Math.round(t / 1e6))} MB`);
+        } else if (m.type === "transcribing") say("Escuchando y escribiendo… ✍️ (puede tardar un poco)");
+        else if (m.type === "done") resolve(m);
+        else if (m.type === "error") reject(new Error(m.message));
+      };
+      subsWorker.onerror = (e) => reject(new Error(e.message || "no se pudo iniciar el reconocimiento de voz"));
+      subsWorker.postMessage({ audio, model: subOpts.model, language: subOpts.lang }, [audio.buffer]);
+    });
+  }
+
+  async function generateSubs(say, go) {
+    if (subsBusy) return;
+    if (!st.L.length) return toast("Agrega clips primero");
+    subsBusy = true;
+    go.disabled = true;
+    try {
+      say("Preparando el audio…");
+      const audio = await speechTrack(subOpts.source);
+      if (!audio) return say(subOpts.source === "music" ? "Este reel no tiene música." : "Tus clips no tienen voz: agrega un video con audio o elige “Letra de la música”.");
+      if (loudness(audio) < 0.004) return say("No se escucha nada en el audio elegido.");
+      const res = await transcribe(audio, say);
+      const raw = cleanChunks(res.chunks, total());
+      if (!raw.length) return say("No encontré palabras en el audio. Prueba con otro idioma o con el modelo Preciso.");
+      const subs = groupSubs(raw);
+      await mutate((p) => { p.subRaw = raw; p.texts = p.texts.filter((t) => !t.sub).concat(subs); });
+      say(`✓ Listo: ${subs.length} subtítulos. Toca uno (CC) en la línea de tiempo para corregir una palabra.`);
+      st.t = 0;
+      requestDraw();
+    } catch (e) {
+      console.warn(e);
+      subsWorker?.terminate();
+      subsWorker = null;
+      say("No se pudo: " + e.message + (navigator.onLine ? "" : " · La primera vez necesitas internet para descargar el modelo."));
+    } finally {
+      subsBusy = false;
+      go.disabled = false;
+    }
+  }
+
+  function regroupSubs() {
+    if (!st.p.subRaw?.length) return;
+    mutate((p) => { p.texts = p.texts.filter((t) => !t.sub).concat(groupSubs(p.subRaw)); });
+  }
+
+  function subsPanel() {
+    const hasVoice = st.p.clips.some((c) => c.kind === "video" && !c.muted);
+    if (!hasVoice && st.p.music) subOpts.source = "music";
+    const count = st.p.texts.filter((t) => t.sub).length;
+    const status = el("p", "hint", count ? `Este reel tiene ${count} subtítulos.` : "");
+    const go = btn(count ? "✨ Volver a generar" : "✨ Generar subtítulos", () => generateSubs((t) => (status.textContent = t), go), "btn wide primary");
+    const set = (k, after) => (v) => { subOpts[k] = v; saveSubOpts(); after?.(v); };
+    return showPanel("Subtítulos automáticos",
+      el("p", "hint", "Mog escucha el audio y escribe los subtítulos con su tiempo. Todo pasa en tu teléfono: la primera vez descarga el modelo de voz y luego funciona sin internet."),
+      go, status,
+      label("¿Qué transcribir?"),
+      chips([["voice", "🎙 Voz de los videos"], ["music", "♫ Letra de la música"]], subOpts.source, set("source"), true),
+      label("Idioma"),
+      chips([["spanish", "Español"], ["english", "Inglés"], ["portuguese", "Portugués"], ["", "Detectar"]], subOpts.lang, set("lang"), true),
+      label("Estilo"),
+      chips([["karaoke", "Karaoke"], ["yellow", "Amarillo"], ["white", "Blanco"], ["box", "Caja"], ["red", "ROJO"]], subOpts.style,
+        set("style", (v) => count && mutate((p) => p.texts.forEach((t) => { if (t.sub) t.style = v; }))), true),
+      label("Palabras por subtítulo"),
+      chips([[1, "1 · rápido estilo TikTok"], [3, "3"], [6, "Frase"]], subOpts.words, set("words", () => count && regroupSubs()), true),
+      label("Posición"),
+      chips([[0.2, "Arriba"], [0.5, "Centro"], [0.72, "Abajo"]], subOpts.y,
+        set("y", (v) => count && mutate((p) => p.texts.forEach((t) => { if (t.sub) t.y = v; })))),
+      label("Modelo de voz"),
+      chips([["onnx-community/whisper-base", "Preciso · 77 MB"], ["onnx-community/whisper-tiny", "Rápido · 41 MB"]], subOpts.model, set("model"), true),
+      count ? btn(`Borrar los ${count} subtítulos`, () => mutate((p) => { p.texts = p.texts.filter((t) => !t.sub); p.subRaw = null; }).then(renderPanel), "btn wide danger") : "");
   }
 
   /* ---------------- Agregar medios ---------------- */
@@ -1524,6 +1720,7 @@
       ["Contenido original o con permiso", "No reutilices videos ajenos ni con marcas de agua de otras apps: las plataformas los marcan como no originales y no los monetizan."],
       ["Música sin problemas de derechos", "Usa audio propio o libre, o agrega el sonido desde la biblioteca de la app al publicar."],
       ["Gancho en los primeros 2 segundos" + (hasHook ? " ✓" : ""), hasHook ? "Tu reel ya tiene texto al inicio." : "Agrega uno con 🪝 Ganchos."],
+      ["Subtítulos" + (st.p.texts.some((t) => t.sub) ? " ✓" : ""), st.p.texts.some((t) => t.sub) ? "Tu reel tiene subtítulos: también lo entienden quienes lo ven sin sonido." : "Mucha gente ve los reels sin sonido. Agrégalos con CC Subtítulos."],
       ["Textos dentro de la zona segura", "Revísalo con ◰ Zona segura para que los botones de la app no los tapen."],
       ["Llamado a la acción al final", "Pide que te sigan, guarden o comenten."],
       [`Duración: ${fmtTime(T)}`, T < 7 ? "Muy corto: suele funcionar mejor de 7 a 60 s." : T > 90 ? "Largo para un reel: asegúrate de que cada segundo aporte." : "Buena duración para reels."],

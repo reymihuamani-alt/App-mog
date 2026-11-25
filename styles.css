@@ -230,3 +230,34 @@ html, body { max-width: 100%; overflow-x: hidden; }
 .vo-progress { padding: 40px 24px; display: grid; gap: 14px; text-align: center; }
 .vo-title { font-size: 22px; font-weight: 800; margin: 0; }
 #voVideo { max-width: 100%; max-height: 60dvh; border-radius: 8px; background: #000; display: block; }
+
+/* ---------------- Portada de la app ---------------- */
+.cover { position: relative; margin: 0 -16px 12px; container-type: inline-size; background: var(--bg); }
+.cover-photo { position: relative; aspect-ratio: 4 / 5; max-height: 62dvh; width: 100%; overflow: hidden; }
+.cover-photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cover-fade { position: absolute; left: 0; right: 0; bottom: 0; height: 38%; background: linear-gradient(rgba(11,11,12,0), var(--bg)); }
+.cover-title { position: absolute; left: 5cqw; right: 5cqw; bottom: 4cqw; display: grid; gap: 2px; }
+.cover-title b { font-size: 15cqw; font-weight: 900; letter-spacing: -0.04em; line-height: .9; }
+.cover-title span { color: #c9c9d0; font-size: 3.6cqw; font-weight: 600; }
+.cover-tag { position: absolute; left: 6cqw; right: 6cqw; margin: 0; text-align: center; font-weight: 800; line-height: 1.05; overflow-wrap: anywhere; }
+/* B/N + frase roja (como “¿TE AMAS MÁS QUE AYER?”) */
+.cover-red img { filter: grayscale(1) contrast(1.15) brightness(.92); }
+.cover-red .cover-tag { top: 44%; transform: translateY(-50%); color: #ef3b2d; text-transform: uppercase; font-size: 10cqw; text-shadow: 0 2px 10px rgba(0,0,0,.25); }
+/* Color cálido con frase blanca */
+.cover-color img { filter: saturate(1.15) contrast(1.06) sepia(.1); }
+.cover-color .cover-tag { bottom: 30%; color: #fff; font-size: 8.5cqw; text-shadow: 0 2px 14px rgba(0,0,0,.65); }
+/* Barra blanca arriba (como “¿Tomas suficiente agua?”) */
+.cover-bar-top { margin: 0; background: var(--bar); color: var(--ink); text-align: center; font-weight: 800; font-size: 7cqw; line-height: 1.15; padding: 5cqw 6cqw; overflow-wrap: anywhere; }
+.cover-mini { margin: 4px 0 8px; border-radius: 14px; overflow: hidden; }
+.cover-mini .cover-photo { max-height: 340px; }
+.cover-settings input:not([type]), .cover-settings input[type=text] { margin-top: 8px; }
+.cover-slider { display: flex !important; align-items: center; gap: 10px; margin: 10px 0 4px; }
+.cover-slider input { flex: 1; accent-color: var(--red); }
+#coverStyles { margin: 4px 0; }
+#coverStyles button { flex: none; border: 1px solid var(--line); background: var(--surface); border-radius: 99px; padding: 8px 14px; font-weight: 600; font-size: 14px; cursor: pointer; }
+#coverStyles button.on { background: var(--text); color: var(--ink); border-color: var(--text); }
+/* Bienvenida */
+.splash { position: fixed; inset: 0; z-index: 70; background: var(--bg); display: grid; place-items: center; transition: opacity .45s ease; }
+.splash .cover { margin: 0; width: min(100%, 520px); }
+.splash .cover-photo { max-height: 100dvh; }
+.splash.out { opacity: 0; pointer-events: none; }

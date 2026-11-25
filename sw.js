@@ -1,6 +1,6 @@
-const CACHE = "mog-v7";
+const CACHE = "mog-v8";
 const SHELL = [
-  "./", "index.html", "styles.css", "app.js", "studio.js", "studio.css", "subs-worker.js", "phrases.js", "manifest.webmanifest",
+  "./", "index.html", "styles.css", "app.js", "studio.js", "studio.css", "subs-worker.js", "cover.js", "phrases.js", "manifest.webmanifest",
   "icons/icon.svg", "icons/icon-192.png", "icons/icon-512.png", "icons/badge-96.png",
 ];
 

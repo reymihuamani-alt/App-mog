@@ -22,6 +22,7 @@
   <main>
     <!-- GALERÍA -->
     <section class="view active" id="view-gallery">
+      <div class="cover" id="cover" hidden></div>
       <div class="grid" id="grid"></div>
       <div class="empty" id="galleryEmpty">
         <div class="empty-card">
@@ -73,6 +74,22 @@
 
     <!-- AJUSTES -->
     <section class="view" id="view-settings">
+      <div class="field cover-settings">
+        <label>Portada de la app</label>
+        <div class="cover cover-mini" id="coverPreview" hidden></div>
+        <div class="row gap">
+          <label class="btn"><input type="file" accept="image/*" id="coverIn" hidden>🖼 Elegir foto de portada</label>
+          <button class="btn danger" id="coverDel" hidden>Quitar</button>
+        </div>
+        <div id="coverOpts" hidden>
+          <div class="topics" id="coverStyles"></div>
+          <input id="coverTitle" maxlength="20" placeholder="Título (ej. MOG)">
+          <input id="coverTag" maxlength="60" placeholder="Frase (ej. ¿Te amas más que ayer?)">
+          <label class="cover-slider">Encuadre <input type="range" id="coverY" min="0" max="100" step="1"></label>
+          <label class="check row"><input type="checkbox" id="coverSplash"> Mostrar como bienvenida al abrir la app</label>
+        </div>
+        <p class="hint">La foto de portada se guarda solo en este teléfono (no se sube a internet).</p>
+      </div>
       <div class="field">
         <label for="sigInput">Tu firma (marca de agua)</label>
         <input id="sigInput" placeholder="@tu_usuario" maxlength="30">
@@ -388,10 +405,13 @@
     </div>
   </div>
 
+  <div class="splash" id="splash" hidden><div class="cover" id="splashCover"></div></div>
+
   <div class="toast" id="toast" hidden></div>
 
   <script src="phrases.js"></script>
   <script src="app.js"></script>
   <script src="studio.js"></script>
+  <script src="cover.js"></script>
 </body>
 </html>

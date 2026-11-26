@@ -261,3 +261,9 @@ html, body { max-width: 100%; overflow-x: hidden; }
 .splash .cover { margin: 0; width: min(100%, 520px); }
 .splash .cover-photo { max-height: 100dvh; }
 .splash.out { opacity: 0; pointer-events: none; }
+
+/* Los avisos no bloquean los toques (por ejemplo, sobre la línea de tiempo) */
+.toast { pointer-events: none; }
+/* Al arrastrar en el editor no se selecciona texto */
+.studio, .studio * { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.studio input, .studio textarea { -webkit-user-select: text; user-select: text; }

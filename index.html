@@ -235,6 +235,7 @@
     </div>
     <div class="st-timeline" id="stTimeline">
       <div class="st-tracks" id="stTracks">
+        <div class="st-ruler" id="stRuler"></div>
         <div class="st-row st-row-clips" id="stClips"></div>
         <div class="st-row st-row-ovs" id="stOvs"></div>
         <div class="st-row st-row-texts" id="stTexts"></div>
@@ -244,6 +245,32 @@
     <div class="st-playhead"></div>
     <div class="st-panel" id="stPanel" hidden></div>
     <div class="st-tools" id="stTools"></div>
+  </div>
+
+  <!-- ENCUADRE (recortar el marco) -->
+  <div class="sheet crop-sheet" id="cropSheet" hidden>
+    <div class="sheet-bar">
+      <button class="icon" data-close>✕</button>
+      <b>Encuadre</b>
+      <button class="btn small primary" id="cropOk">Listo</button>
+    </div>
+    <div class="crop-stage" id="cropStage">
+      <div class="crop-frame" id="cropFrame">
+        <canvas id="cropCv"></canvas>
+        <div class="crop-box" id="cropBox">
+          <i class="cg"></i><i class="c tl" data-c="tl"></i><i class="c tr" data-c="tr"></i><i class="c bl" data-c="bl"></i><i class="c br" data-c="br"></i>
+        </div>
+      </div>
+    </div>
+    <div class="controls">
+      <div class="topics" id="cropRatios"></div>
+      <div class="row gap">
+        <button class="btn" id="cropRot">⟳ Girar 90°</button>
+        <button class="btn" id="cropFlip">⇋ Espejo</button>
+        <button class="btn" id="cropReset">Restablecer</button>
+      </div>
+      <p class="hint">Arrastra el recuadro para mover el encuadre y sus esquinas para cambiar el tamaño. Lo que quede fuera no se verá.</p>
+    </div>
   </div>
 
   <!-- AGREGAR MEDIOS -->

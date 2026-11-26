@@ -16,6 +16,8 @@ const perms = [
   '<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />',
   '<uses-permission android:name="android.permission.VIBRATE" />',
   '<uses-permission android:name="android.permission.WAKE_LOCK" />',
+  '<uses-permission android:name="android.permission.RECORD_AUDIO" />',
+  '<uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />',
 ];
 for (const p of perms) {
   const name = p.match(/android:name="([^"]+)"/)[1];

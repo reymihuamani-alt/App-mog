@@ -60,7 +60,7 @@
 
   const st = {
     p: null, L: [], els: new Map(), urls: [],
-    actx: null, master: null, musicGain: null, musicBuf: null, musicSrc: null, musicKey: null, musicName: "",
+    actx: null, master: null, bufs: new Map(), voices: [], impulse: null, justDragged: false, rec: null,
     t: 0, playing: false, a0: 0, t0: 0, raf: 0, drawRaf: 0,
     sel: null, tool: null, pps: 40, hist: [], fut: [], lastKey: "", lastAt: 0, saveT: 0, expectScroll: -1, exp: null,
   };
@@ -97,7 +97,7 @@
 
   const newProject = (format) => ({
     id: uid(), name: "Reel " + new Date().toLocaleDateString("es", { day: "numeric", month: "short" }),
-    format, clips: [], texts: [], music: null, created: Date.now(), updated: Date.now(), duration: 0, thumb: null,
+    format, clips: [], texts: [], audios: [], created: Date.now(), updated: Date.now(), duration: 0, thumb: null,
   });
   const photoClip = (photoId, o = {}) => ({ id: uid(), kind: "photo", src: photoId, dur: 3, filter: "none", motion: "in", fit: "contain", trans: "none", ...o });
   const videoClip = (m) => ({
@@ -106,7 +106,17 @@
   });
   const newText = (text, start, end, o = {}) => ({ id: uid(), text, start, end, style: "box", anim: "pop", size: 6.5, y: 0.2, ...o });
 
-  /* ---------------- Audio ---------------- */
+  /* ---------------- Audio: varias pistas ---------------- */
+
+  const FX = [
+    ["none", "Normal"], ["echo", "Eco"], ["reverb", "Sala"], ["phone", "Teléfono"], ["radio", "Radio"],
+    ["bass", "Bajos +"], ["bright", "Brillo"], ["lofi", "Lo-fi"], ["under", "Bajo el agua"],
+  ];
+  const EQ_PRESETS = [["0,0,0", "Plano"], ["-2,3,4", "Voz clara"], ["7,0,-1", "Más bajo"], ["-3,1,6", "Brillante"], ["4,-3,2", "Fiesta"]];
+  const newAudioBlock = (src, ref, start, dur, o = {}) => ({
+    id: uid(), src, ref, start, offset: 0, dur, volume: 1, fadeIn: 0, fadeOut: 0, loop: false, fx: "none", eq: [0, 0, 0], ...o,
+  });
+  const bufKey = (a) => a.src + ":" + a.ref;
 
   function ensureAudio() {
     if (st.actx) return;
@@ -114,64 +124,235 @@
     st.actx = new AC();
     st.master = st.actx.createGain();
     st.master.connect(st.actx.destination);
-    st.musicGain = st.actx.createGain();
-    st.musicGain.connect(st.master);
   }
 
-  async function ensureMusic() {
-    const m = st.p.music;
-    const key = m ? m.audioId : null;
-    if (key === st.musicKey && (st.musicBuf || !m)) return;
-    stopMusic();
-    st.musicBuf = null;
-    st.musicKey = key;
-    if (!m) return;
-    const rec = await DB.get("audios", m.audioId);
-    if (!rec) { st.p.music = null; st.musicKey = null; return; }
+  // Los reels guardados antes tenían una sola "música": se convierte en una pista de audio.
+  function migrateProject(p) {
+    p.audios ||= [];
+    if (p.music) {
+      const m = p.music;
+      const T = p.clips.reduce((a, c) => a + clipDur(c), 0);
+      p.audios.push(newAudioBlock("audio", m.audioId, 0, Math.max(1, T), {
+        offset: m.offset || 0, volume: m.volume ?? 0.9, fadeIn: m.fadeIn ? 1.5 : 0, fadeOut: m.fadeOut ? 1.5 : 0, loop: true,
+      }));
+      delete p.music;
+    }
+    return p;
+  }
+
+  async function loadBuf(a) {
+    const k = bufKey(a);
+    if (st.bufs.has(k)) return st.bufs.get(k);
+    let entry = null;
     try {
-      st.musicBuf = await decodeAudioRecord(rec, st.actx);
-      st.musicName = rec.name;
-    } catch {
-      toast("No se pudo leer ese audio");
-      st.p.music = null;
-      st.musicKey = null;
+      if (a.src === "audio") {
+        const rec = await DB.get("audios", a.ref);
+        if (rec) entry = { buf: await decodeAudioRecord(rec, st.actx), name: rec.name };
+      } else {
+        const m = await DB.get("media", a.ref);
+        if (m) entry = { buf: await st.actx.decodeAudioData(await m.blob.arrayBuffer()), name: "Audio de " + (m.name || "video").replace(/\.[^.]+$/, "") };
+      }
+    } catch (e) { console.warn(e); }
+    if (entry) entry.peaks = computePeaks(entry.buf);
+    st.bufs.set(k, entry);
+    return entry;
+  }
+  async function ensureBufs() { for (const a of st.p.audios) await loadBuf(a); }
+  const bufOf = (a) => st.bufs.get(bufKey(a));
+  const srcDur = (a) => bufOf(a)?.buf.duration || a.offset + a.dur;
+
+  // Forma de onda: el pico de volumen cada 20 ms, normalizado.
+  function computePeaks(buf) {
+    const perSec = 50;
+    const n = Math.max(1, Math.ceil(buf.duration * perSec));
+    const ch = buf.getChannelData(0);
+    const step = Math.max(1, Math.floor(ch.length / n));
+    const data = new Float32Array(n);
+    let max = 1e-4;
+    for (let i = 0; i < n; i++) {
+      let m = 0;
+      const end = Math.min(ch.length, (i + 1) * step);
+      for (let j = i * step; j < end; j += 4) { const v = Math.abs(ch[j]); if (v > m) m = v; }
+      data[i] = m;
+      if (m > max) max = m;
     }
+    for (let i = 0; i < n; i++) data[i] /= max;
+    return { data, perSec };
   }
 
-  function startMusic(t) {
-    stopMusic();
-    const m = st.p.music;
-    const buf = st.musicBuf;
-    const T = total();
-    if (!m || !buf || t >= T) return;
-    const off = clamp(m.offset || 0, 0, Math.max(0, buf.duration - 0.2));
-    const loopLen = Math.max(0.2, buf.duration - off);
-    const src = st.actx.createBufferSource();
-    src.buffer = buf;
-    src.loop = true;
-    src.loopStart = off;
-    src.loopEnd = buf.duration;
-    const g = st.musicGain.gain;
-    const now = st.actx.currentTime;
-    const V = m.volume;
-    const fi = m.fadeIn ? Math.min(1.5, T / 3) : 0;
-    const fo = m.fadeOut ? Math.min(1.5, T / 3) : 0;
-    const volAt = (x) => Math.max(0, V * Math.min(1, fi ? x / fi : 1, fo ? (T - x) / fo : 1));
-    g.cancelScheduledValues(now);
-    g.setValueAtTime(volAt(t), now);
-    if (fi && t < fi) g.linearRampToValueAtTime(volAt(fi), now + (fi - t));
-    if (fo) {
-      const s = Math.max(t, T - fo, fi);
-      if (s > t) g.setValueAtTime(volAt(s), now + (s - t));
-      g.linearRampToValueAtTime(0, now + (T - t));
+  // Ritmo: energía en ventanas de 10 ms, autocorrelación para el tempo (60–200 BPM) y fase con más golpes.
+  function detectBeats(entry) {
+    if (entry.beats) return entry.beats;
+    const buf = entry.buf;
+    const sr = buf.sampleRate;
+    const ch = buf.getChannelData(0);
+    const hop = Math.round(sr * 0.01);
+    const env = [];
+    for (let i = 0; i + hop <= ch.length; i += hop) {
+      let s = 0;
+      for (let j = i; j < i + hop; j += 2) s += ch[j] * ch[j];
+      env.push(Math.log(1e-4 + Math.sqrt(s / (hop / 2))));
     }
-    src.connect(st.musicGain);
-    src.start(now, off + (t % loopLen));
-    st.musicSrc = src;
+    const on = new Float32Array(env.length);
+    for (let i = 1; i < env.length; i++) on[i] = Math.max(0, env[i] - env[i - 1]);
+    let lag = 50, bestV = -1;
+    for (let L = 30; L <= 100; L++) {
+      let v = 0;
+      for (let i = L; i < on.length; i++) v += on[i] * on[i - L];
+      v *= 1 + 0.15 * Math.exp(-Math.pow((L - 50) / 20, 2)); // preferencia suave por ~120 BPM
+      if (v > bestV) { bestV = v; lag = L; }
+    }
+    let phase = 0, bp = -1;
+    for (let ph = 0; ph < lag; ph++) {
+      let v = 0;
+      for (let i = ph; i < on.length; i += lag) v += on[i];
+      if (v > bp) { bp = v; phase = ph; }
+    }
+    const period = lag * 0.01;
+    const times = [];
+    for (let t = phase * 0.01; t < buf.duration; t += period) times.push(t);
+    entry.beats = { bpm: Math.round(60 / period), period, times };
+    return entry.beats;
   }
-  function stopMusic() {
-    try { st.musicSrc?.stop(); } catch {}
-    st.musicSrc = null;
+
+  const waveCache = new Map();
+  function waveURL(a, widthPx, selected) {
+    const e = bufOf(a);
+    if (!e) return "";
+    const w = Math.max(20, Math.min(2400, Math.round(widthPx)));
+    const key = [bufKey(a), a.offset.toFixed(2), a.dur.toFixed(2), a.loop, w, !!e.beats, selected].join("|");
+    if (waveCache.has(key)) return waveCache.get(key);
+    const c = document.createElement("canvas");
+    c.width = w;
+    c.height = 40;
+    const g = c.getContext("2d");
+    const { data, perSec } = e.peaks;
+    const SD = e.buf.duration;
+    g.fillStyle = selected ? "#d9fff0" : "#7fe3bd";
+    for (let x = 0; x < w; x += 2) {
+      let t = a.offset + (x / w) * a.dur;
+      if (a.loop && t >= SD) t = a.offset + ((t - a.offset) % Math.max(0.05, SD - a.offset));
+      const v = t < SD ? data[Math.min(data.length - 1, Math.floor(t * perSec))] : 0;
+      const h = Math.max(1, v * 34);
+      g.fillRect(x, 20 - h / 2, 1.4, h);
+    }
+    if (e.beats) {
+      g.fillStyle = "#ffd60a";
+      for (const b of e.beats.times) {
+        if (b < a.offset || b > a.offset + a.dur) continue;
+        g.fillRect(((b - a.offset) / a.dur) * w - 1, 0, 2, 6);
+      }
+    }
+    const url = c.toDataURL();
+    if (waveCache.size > 200) waveCache.clear();
+    waveCache.set(key, url);
+    return url;
+  }
+
+  function impulseFor(ctx) {
+    if (st.impulse?.sampleRate === ctx.sampleRate) return st.impulse;
+    const len = Math.round(ctx.sampleRate * 1.8);
+    const b = ctx.createBuffer(2, len, ctx.sampleRate);
+    for (let c = 0; c < 2; c++) {
+      const d = b.getChannelData(c);
+      for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3);
+    }
+    st.impulse = b;
+    return b;
+  }
+
+  // Ecualizador (graves / medios / agudos) + efecto, de input a output.
+  function fxChain(ctx, a, input, output) {
+    let node = input;
+    const filt = (type, freq, gain = 0, Q = 0.8) => {
+      const f = ctx.createBiquadFilter();
+      f.type = type; f.frequency.value = freq; f.gain.value = gain; f.Q.value = Q;
+      node.connect(f);
+      node = f;
+      return f;
+    };
+    const [lo, mid, hi] = a.eq || [0, 0, 0];
+    if (lo) filt("lowshelf", 200, lo);
+    if (mid) filt("peaking", 1200, mid, 0.9);
+    if (hi) filt("highshelf", 4000, hi);
+    switch (a.fx) {
+      case "echo": {
+        const d = ctx.createDelay(1);
+        d.delayTime.value = 0.28;
+        const fb = ctx.createGain(); fb.gain.value = 0.38;
+        const wet = ctx.createGain(); wet.gain.value = 0.5;
+        node.connect(output);
+        node.connect(d); d.connect(fb); fb.connect(d); d.connect(wet); wet.connect(output);
+        return;
+      }
+      case "reverb": {
+        const cv = ctx.createConvolver();
+        cv.buffer = impulseFor(ctx);
+        const wet = ctx.createGain(); wet.gain.value = 0.5;
+        node.connect(output);
+        node.connect(cv); cv.connect(wet); wet.connect(output);
+        return;
+      }
+      case "phone": filt("highpass", 500, 0, 0.7); filt("lowpass", 3000, 0, 0.7); filt("peaking", 1500, 6, 1); break;
+      case "radio": {
+        filt("highpass", 300); filt("lowpass", 4500);
+        const ws = ctx.createWaveShaper();
+        const curve = new Float32Array(256);
+        for (let i = 0; i < 256; i++) { const x = (i / 128) - 1; curve[i] = Math.tanh(2.2 * x); }
+        ws.curve = curve;
+        node.connect(ws); node = ws;
+        break;
+      }
+      case "bass": filt("lowshelf", 150, 10); break;
+      case "bright": filt("highshelf", 3500, 8); break;
+      case "lofi": filt("lowpass", 2800, 0, 0.5); filt("highpass", 120); filt("peaking", 900, 3, 0.7); break;
+      case "under": filt("lowpass", 450, 0, 1.2); break;
+    }
+    node.connect(output);
+  }
+
+  function startAudios(t) {
+    stopAudios();
+    const T = total();
+    const now = st.actx.currentTime + 0.02;
+    for (const a of st.p.audios) {
+      const e = bufOf(a);
+      if (!e) continue;
+      const end = Math.min(a.start + a.dur, T);
+      if (end <= t) continue;
+      const from = Math.max(t, a.start);
+      const when = now + (from - t);
+      const into = from - a.start;
+      const SD = e.buf.duration;
+      const src = st.actx.createBufferSource();
+      src.buffer = e.buf;
+      let offset = a.offset + into;
+      if (a.loop) {
+        src.loop = true;
+        src.loopStart = a.offset;
+        src.loopEnd = SD;
+        offset = a.offset + (into % Math.max(0.05, SD - a.offset));
+      } else if (offset >= SD) continue;
+      const g = st.actx.createGain();
+      const fi = Math.min(a.fadeIn, a.dur / 2), fo = Math.min(a.fadeOut, a.dur / 2);
+      const volAt = (x) => Math.max(0, a.volume * Math.min(1, fi ? x / fi : 1, fo ? (a.dur - x) / fo : 1));
+      g.gain.setValueAtTime(volAt(into), when);
+      if (fi && into < fi) g.gain.linearRampToValueAtTime(volAt(fi), when + (fi - into));
+      if (fo) {
+        const s = Math.max(into, a.dur - fo, fi);
+        if (s > into) g.gain.setValueAtTime(volAt(s), when + (s - into));
+        g.gain.linearRampToValueAtTime(0, when + (a.dur - into));
+      }
+      src.connect(g);
+      fxChain(st.actx, a, g, st.master);
+      src.start(when, offset);
+      src.stop(when + (end - from));
+      st.voices.push(src);
+    }
+  }
+  function stopAudios() {
+    for (const s of st.voices) { try { s.stop(); } catch {} }
+    st.voices = [];
   }
 
   /* ---------------- Elementos de cada clip ---------------- */
@@ -457,7 +638,7 @@
     st.playing = true;
     st.t0 = st.t;
     st.a0 = st.actx.currentTime;
-    startMusic(st.t);
+    startAudios(st.t);
     $("#stPlay").textContent = "❚❚";
     loop();
   }
@@ -465,7 +646,7 @@
   function pause() {
     st.playing = false;
     cancelAnimationFrame(st.raf);
-    stopMusic();
+    stopAudios();
     for (const e of st.els.values()) if (e.kind === "video") { e.el.pause(); if (e.gain) e.gain.gain.value = 0; }
     $("#stPlay").textContent = "▶";
     requestDraw();
@@ -540,46 +721,199 @@
 
   const isSel = (type, id) => st.sel?.type === type && st.sel.id === id;
 
+  function audioLanes() {
+    const lanes = [];
+    const map = new Map();
+    for (const a of [...st.p.audios].sort((x, y) => x.start - y.start)) {
+      let i = lanes.findIndex((end) => end <= a.start + 0.01);
+      if (i < 0) { i = lanes.length; lanes.push(0); }
+      lanes[i] = a.start + a.dur;
+      map.set(a.id, i);
+    }
+    return { map, n: lanes.length };
+  }
+
+  // Puntos donde "imanta" un bloque al arrastrarlo: cabezal, cortes entre clips, bordes de textos/audios y golpes del ritmo.
+  function snapPoints(exceptId) {
+    const pts = [0, total(), st.t];
+    for (const o of st.L) pts.push(o.start, o.end);
+    for (const x of st.p.texts) if (x.id !== exceptId) pts.push(x.start, x.end);
+    for (const a of st.p.audios) {
+      if (a.id === exceptId) continue;
+      pts.push(a.start, a.start + a.dur);
+      const e = bufOf(a);
+      if (e?.beats) for (const b of e.beats.times) if (b >= a.offset && b <= a.offset + a.dur) pts.push(a.start + b - a.offset);
+    }
+    return pts;
+  }
+  function snap(t, pts) {
+    const lim = 10 / st.pps;
+    let best = t, d = lim;
+    for (const p of pts) { const k = Math.abs(p - t); if (k < d) { d = k; best = p; } }
+    return best;
+  }
+
+  // Arrastre con el dedo (solo en el bloque seleccionado o sus asas). onMove/onEnd reciben segundos desplazados.
+  function attachDrag(node, onMove, onEnd) {
+    node.addEventListener("pointerdown", (ev) => {
+      if (ev.button > 0) return;
+      ev.stopPropagation();
+      ev.preventDefault();
+      if (st.playing) pause();
+      try { node.setPointerCapture(ev.pointerId); } catch {}
+      const x0 = ev.clientX;
+      const sl0 = tl.scrollLeft;
+      let dx = 0, moved = false, edge = 0;
+      const secs = () => (dx + tl.scrollLeft - sl0) / st.pps;
+      const timer = setInterval(() => { if (edge && moved) { tl.scrollLeft += edge * 10; onMove(secs()); } }, 30);
+      const mv = (e) => {
+        dx = e.clientX - x0;
+        if (Math.abs(dx) > 4) moved = true;
+        const r = tl.getBoundingClientRect();
+        edge = e.clientX < r.left + 36 ? -1 : e.clientX > r.right - 36 ? 1 : 0;
+        if (moved) onMove(secs());
+      };
+      const up = () => {
+        clearInterval(timer);
+        node.removeEventListener("pointermove", mv);
+        node.removeEventListener("pointerup", up);
+        node.removeEventListener("pointercancel", up);
+        if (moved) { st.justDragged = true; setTimeout(() => (st.justDragged = false), 50); }
+        onEnd(secs(), moved);
+      };
+      node.addEventListener("pointermove", mv);
+      node.addEventListener("pointerup", up);
+      node.addEventListener("pointercancel", up);
+    });
+  }
+
+  function tag(node, text) {
+    let t = node.querySelector(".st-tag");
+    if (!t) { t = el("span", "st-tag"); node.append(t); }
+    t.textContent = text;
+  }
+
+  // Agrega asas de recorte al bloque seleccionado. trim(side, ds) devuelve [left, width] en px; commit(side, ds) guarda.
+  function addHandles(node, trim, commit) {
+    for (const side of ["l", "r"]) {
+      const h = el("i", "st-h " + side);
+      node.append(h);
+      attachDrag(h, (ds) => {
+        const [left, width, label] = trim(side, ds);
+        node.style.left = left + "px";
+        node.style.width = Math.max(10, width) + "px";
+        tag(node, label);
+      }, (ds, moved) => { if (moved) commit(side, ds); else renderTimeline(); });
+    }
+  }
+
   function renderTimeline() {
     const pad = Math.round(tl.clientWidth / 2);
     const pps = st.pps;
     const T = total();
-    $("#stTracks").style.width = pad * 2 + T * pps + 70 + "px";
+    const lanes = audioLanes();
+    const nl = Math.max(1, lanes.n);
+    $("#studio").style.setProperty("--tlh", 100 + Math.min(4, nl) * 28 + 6 + "px");
+    $("#stMusic").style.height = nl * 28 + "px";
+    $("#stTracks").style.height = 100 + nl * 28 + 6 + "px";
+    $("#stTracks").style.width = pad * 2 + Math.max(T, ...st.p.audios.map((a) => a.start + a.dur), ...st.p.texts.map((x) => x.end)) * pps + 70 + "px";
+    const X = (t) => pad + t * pps;
 
+    /* --- Clips (pista principal) --- */
     const clips = $("#stClips");
     clips.innerHTML = "";
     st.L.forEach((o, i) => {
-      const b = el("div", "st-clip" + (isSel("clip", o.c.id) ? " st-sel" : ""));
-      b.style.left = pad + o.start * pps + "px";
+      const sel = isSel("clip", o.c.id);
+      const b = el("div", "st-clip" + (sel ? " st-sel" : ""));
+      b.style.left = X(o.start) + "px";
       b.style.width = Math.max(10, o.d * pps - 2) + "px";
       const e = st.els.get(o.c.id);
       if (e?.thumb) b.style.backgroundImage = `url("${e.thumb}")`;
       b.append(el("span", "", o.d.toFixed(1) + "s"));
-      const kind = (o.c.kind === "video" ? "🎬" : "🖼") + (o.c.kind === "video" && o.c.speed !== 1 ? " " + o.c.speed + "x" : "") + (e ? "" : " ⚠");
+      const kind = (o.c.kind === "video" ? "🎬" : "🖼") + (o.c.kind === "video" && o.c.speed !== 1 ? " " + o.c.speed + "x" : "") + (o.c.muted ? " 🔇" : "") + (e ? "" : " ⚠");
       b.append(el("span", "st-kind", kind));
-      b.addEventListener("click", (ev) => { ev.stopPropagation(); select({ type: "clip", id: o.c.id }); });
+      b.addEventListener("click", (ev) => { ev.stopPropagation(); if (!st.justDragged) select({ type: "clip", id: o.c.id }); });
+      if (sel) {
+        // mover = reordenar
+        let marker = null, target = i;
+        attachDrag(b, (ds) => {
+          b.style.transform = `translateX(${ds * pps}px)`;
+          b.style.zIndex = 6;
+          const center = o.start + o.d / 2 + ds;
+          target = st.L.filter((x) => x !== o && x.start + x.d / 2 < center).length;
+          // posición de inserción: suma de las duraciones de los clips que quedarían antes
+          const at = st.L.filter((x) => x !== o).slice(0, target).reduce((sum, x) => sum + x.d, 0);
+          marker ||= clips.appendChild(el("div", "st-drop"));
+          marker.style.left = X(at) + "px";
+          tag(b, target === i ? "Suelta aquí" : `Posición ${target + 1}`);
+        }, (ds, moved) => {
+          if (!moved || target === i) return renderTimeline();
+          mutate((p) => { const [c] = p.clips.splice(i, 1); p.clips.splice(target, 0, c); }).then(() => {
+            const n = st.L.find((x) => x.c.id === o.c.id);
+            st.t = n.start;
+            requestDraw();
+            toast("Clip movido");
+          });
+        });
+        addHandles(b, (side, ds) => {
+          const c = o.c;
+          let d;
+          if (c.kind === "photo") d = clamp(side === "r" ? c.dur + ds : c.dur - ds, 0.3, 60);
+          else {
+            const ts = side === "l" ? clamp(c.trimStart + ds * c.speed, 0, c.trimEnd - 0.3) : c.trimStart;
+            const te = side === "r" ? clamp(c.trimEnd + ds * c.speed, c.trimStart + 0.3, c.srcDur) : c.trimEnd;
+            d = (te - ts) / c.speed;
+          }
+          return [X(o.start), d * pps - 2, d.toFixed(1) + " s"];
+        }, (side, ds) => mutate(() => {
+          const c = o.c;
+          if (c.kind === "photo") c.dur = clamp(side === "r" ? c.dur + ds : c.dur - ds, 0.3, 60);
+          else if (side === "l") c.trimStart = clamp(c.trimStart + ds * c.speed, 0, c.trimEnd - 0.3);
+          else c.trimEnd = clamp(c.trimEnd + ds * c.speed, c.trimStart + 0.3, c.srcDur);
+        }));
+      }
       clips.append(b);
       if (i > 0) {
         const has = o.c.trans && o.c.trans !== "none";
         const tb = el("button", "st-trans" + (has ? " has" : ""), has ? "⇄" : "+");
         tb.title = "Transición";
-        tb.style.left = pad + o.start * pps + "px";
+        tb.style.left = X(o.start) + "px";
         tb.addEventListener("click", (ev) => { ev.stopPropagation(); select({ type: "clip", id: o.c.id }, "trans"); });
         clips.append(tb);
       }
     });
     const ghost = el("button", "st-add-ghost", "+");
-    ghost.style.left = pad + T * pps + 6 + "px";
+    ghost.style.left = X(T) + 6 + "px";
     ghost.addEventListener("click", (ev) => { ev.stopPropagation(); openAdd(); });
     clips.append(ghost);
 
+    /* --- Textos --- */
     const texts = $("#stTexts");
     texts.innerHTML = "";
     for (const tx of st.p.texts) {
-      const b = el("div", "st-text" + (tx.sub ? " sub" : "") + (isSel("text", tx.id) ? " st-sel" : ""), (tx.sub ? "CC " : "T ") + tx.text);
-      b.style.left = pad + tx.start * pps + "px";
+      const sel = isSel("text", tx.id);
+      const b = el("div", "st-text" + (tx.sub ? " sub" : "") + (sel ? " st-sel" : ""));
+      b.append(el("b", "", (tx.sub ? "CC " : "T ") + tx.text));
+      b.style.left = X(tx.start) + "px";
       b.style.width = Math.max(14, (tx.end - tx.start) * pps - 2) + "px";
-      b.addEventListener("click", (ev) => { ev.stopPropagation(); select({ type: "text", id: tx.id }); });
+      b.addEventListener("click", (ev) => { ev.stopPropagation(); if (!st.justDragged) select({ type: "text", id: tx.id }); });
+      if (sel) {
+        const pts = snapPoints(tx.id);
+        const len = tx.end - tx.start;
+        const moveTo = (ds) => {
+          let s = Math.max(0, tx.start + ds);
+          const s1 = snap(s, pts), s2 = snap(s + len, pts) - len;
+          s = Math.abs(s1 - s) <= Math.abs(s2 - s) ? s1 : s2;
+          return Math.max(0, s);
+        };
+        attachDrag(b, (ds) => { const s = moveTo(ds); b.style.left = X(s) + "px"; tag(b, fmt(s)); },
+          (ds, moved) => { if (!moved) return; const s = moveTo(ds); mutate(() => { tx.start = s; tx.end = s + len; }); });
+        const edges = (side, ds) => side === "l"
+          ? [Math.max(0, Math.min(snap(tx.start + ds, pts), tx.end - 0.2)), tx.end]
+          : [tx.start, Math.max(tx.start + 0.2, snap(tx.end + ds, pts))];
+        addHandles(b, (side, ds) => { const [s, e] = edges(side, ds); return [X(s), (e - s) * pps - 2, fmt(side === "l" ? s : e)]; },
+          (side, ds) => { const [s, e] = edges(side, ds); mutate(() => { tx.start = s; tx.end = e; }); });
+      }
       texts.append(b);
     }
     if (!st.p.texts.length && T) {
@@ -588,16 +922,49 @@
       texts.append(h);
     }
 
+    /* --- Pistas de audio --- */
     const mus = $("#stMusic");
     mus.innerHTML = "";
-    if (st.p.music && st.musicBuf) {
-      const b = el("div", "st-mus" + (isSel("music", "music") ? " st-sel" : ""), "♫ " + st.musicName);
-      b.style.left = pad + "px";
-      b.style.width = Math.max(30, T * pps - 2) + "px";
-      b.addEventListener("click", (ev) => { ev.stopPropagation(); select({ type: "music", id: "music" }); });
+    for (const a of st.p.audios) {
+      const sel = isSel("audio", a.id);
+      const e = bufOf(a);
+      const b = el("div", "st-mus" + (sel ? " st-sel" : "") + (e ? "" : " missing"));
+      b.style.top = lanes.map.get(a.id) * 28 + "px";
+      b.style.left = X(a.start) + "px";
+      const wpx = Math.max(14, a.dur * pps - 2);
+      b.style.width = wpx + "px";
+      if (e) b.style.backgroundImage = `url("${waveURL(a, wpx, sel)}")`;
+      const label = (a.src === "media" ? "🎬 " : a.rec ? "🎙 " : "♫ ") + (e?.name || "Audio no encontrado") + (a.fx !== "none" ? " · " + FX.find((f) => f[0] === a.fx)?.[1] : "") + (a.loop ? " · 🔁" : "");
+      b.append(el("b", "", label));
+      b.addEventListener("click", (ev) => { ev.stopPropagation(); if (!st.justDragged) select({ type: "audio", id: a.id }); });
+      if (sel) {
+        const pts = snapPoints(a.id);
+        const moveTo = (ds) => {
+          let s = Math.max(0, a.start + ds);
+          const s1 = snap(s, pts), s2 = snap(s + a.dur, pts) - a.dur;
+          s = Math.abs(s1 - s) <= Math.abs(s2 - s) ? s1 : s2;
+          return Math.max(0, s);
+        };
+        attachDrag(b, (ds) => { const s = moveTo(ds); b.style.left = X(s) + "px"; tag(b, fmt(s)); },
+          (ds, moved) => { if (!moved) return; const s = moveTo(ds); mutate(() => { a.start = s; }); });
+        const SD = srcDur(a);
+        const edges = (side, ds) => {
+          if (side === "l") {
+            // recorta el inicio: se mueve el comienzo y se salta esa parte del audio
+            const minDs = a.loop ? -a.start : Math.max(-a.start, -a.offset);
+            const d = clamp(snap(a.start + ds, pts) - a.start, minDs, a.dur - 0.3);
+            return { start: a.start + d, offset: a.offset + d, dur: a.dur - d };
+          }
+          const maxDur = a.loop ? 3600 : SD - a.offset;
+          return { start: a.start, offset: a.offset, dur: clamp(snap(a.start + a.dur + ds, pts) - a.start, 0.3, maxDur) };
+        };
+        addHandles(b, (side, ds) => { const r = edges(side, ds); return [X(r.start), r.dur * pps - 2, r.dur.toFixed(1) + " s"]; },
+          (side, ds) => { const r = edges(side, ds); mutate(() => Object.assign(a, r)); });
+      }
       mus.append(b);
-    } else if (T) {
-      const h = el("div", "st-hint-row", "♫ Toca “Música” para agregar una canción");
+    }
+    if (!st.p.audios.length && T) {
+      const h = el("div", "st-hint-row", "♫ Toca “Audio” para agregar música o grabar tu voz");
       h.style.left = pad + "px";
       mus.append(h);
     }
@@ -643,7 +1010,7 @@
     if (rebuild) {
       for (const c of st.p.clips) await loadEl(c);
       pruneEls();
-      await ensureMusic();
+      await ensureBufs();
     }
     relayout();
     st.t = clamp(st.t, 0, total());
@@ -695,7 +1062,7 @@
     if (!s) return null;
     if (s.type === "clip") return st.p.clips.find((c) => c.id === s.id);
     if (s.type === "text") return st.p.texts.find((x) => x.id === s.id);
-    if (s.type === "music") return st.p.music;
+    if (s.type === "audio") return st.p.audios.find((a) => a.id === s.id);
     return null;
   }
 
@@ -705,6 +1072,10 @@
     if (s?.type === "text") {
       const tx = findSel();
       if (tx && (st.t < tx.start || st.t >= tx.end)) { st.t = tx.start + 0.01; requestDraw(); }
+    }
+    if (s?.type === "audio") {
+      const a = findSel();
+      if (a && (st.t < a.start || st.t >= a.start + a.dur)) { st.t = a.start; requestDraw(); }
     }
     if (s?.type === "clip" && tool === "trans") {
       const o = st.L.find((x) => x.c.id === s.id);
@@ -723,7 +1094,7 @@
       return [
         ["back", "‹", "Atrás"], ["split", "✂", "Dividir"],
         v ? ["trim", "⇤⇥", "Recortar"] : ["dur", "⏱", "Duración"],
-        ...(v ? [["speed", "⏩", "Velocidad"], ["vol", "🔊", "Volumen"]] : []),
+        ...(v ? [["speed", "⏩", "Velocidad"], ["vol", "🔊", "Volumen"], ["sep", "⇣♫", "Separar audio"]] : []),
         ["filter", "◐", "Filtros"], ["motion", "↗", "Movimiento"], ["fit", "⤢", "Ajuste"], ["trans", "⇄", "Transición"],
         ["dup", "⧉", "Duplicar"], ["left", "◀", "Mover"], ["right", "▶", "Mover"], ["del", "🗑", "Borrar", "danger"],
       ];
@@ -735,14 +1106,15 @@
         ["tdel", "🗑", "Borrar", "danger"],
       ];
     }
-    if (s?.type === "music") {
+    if (s?.type === "audio") {
       return [
-        ["back", "‹", "Atrás"], ["mchange", "♫", "Cambiar"], ["mvol", "🔊", "Volumen"], ["moff", "⇥", "Inicio"],
-        ["mfade", "◢", "Fundidos"], ["mdel", "🗑", "Quitar", "danger"],
+        ["back", "‹", "Atrás"], ["avol", "🔊", "Volumen"], ["afade", "◢", "Fundidos"], ["afx", "✺", "Efectos"],
+        ["aeq", "🎚", "Ecualizador"], ["abeat", "🥁", "Ritmo"], ["asplit", "✂", "Dividir"], ["adup", "⧉", "Duplicar"],
+        ["adel", "🗑", "Borrar", "danger"],
       ];
     }
     return [
-      ["add", "＋", "Medios"], ["text", "T", "Texto"], ["subs", "CC", "Subtítulos"], ["music", "♫", "Música"], ["hooks", "🪝", "Ganchos"],
+      ["add", "＋", "Medios"], ["text", "T", "Texto"], ["subs", "CC", "Subtítulos"], ["aadd", "♫", "Audio"], ["rec", "🎙", "Voz en off"], ["hooks", "🪝", "Ganchos"],
       ["format", "▭", "Formato"], ["safe", "◰", "Zona segura"], ["transAll", "⇄", "Transiciones"], ["filtersAll", "◐", "Filtros"],
     ];
   }
@@ -780,11 +1152,15 @@
         await mutate((p) => p.texts.push(t));
         return select({ type: "text", id: t.id }, "edit");
       }
-      case "music":
-        if (st.p.music) return select({ type: "music", id: "music" }, "mvol");
-        st.tool = "mchange";
-        renderTools();
-        return renderPanel();
+      case "sep": {
+        if (c.speed !== 1) return toast("Pon la velocidad en Normal para separar el audio");
+        const o = st.L.find((x) => x.c.id === c.id);
+        const a = newAudioBlock("media", c.src, o.start, o.d, { offset: c.trimStart, volume: c.volume });
+        if (!(await loadBuf(a))) return toast("Este video no tiene audio");
+        await mutate((p) => { c.muted = true; p.audios.push(a); }, { rebuild: true });
+        select({ type: "audio", id: a.id });
+        return toast("Audio separado: ahora puedes moverlo, recortarlo y ponerle efectos");
+      }
       case "split": {
         const o = st.L.find((x) => x.c.id === c.id);
         const lt = st.t - o.start;
@@ -824,8 +1200,22 @@
       case "tdel":
         await mutate((p) => { p.texts = p.texts.filter((x) => x !== tx); });
         return select(null);
-      case "mdel":
-        await mutate((p) => { p.music = null; }, { rebuild: true });
+      case "asplit": {
+        const a = findSel();
+        const cut = st.t - a.start;
+        if (cut < 0.2 || a.dur - cut < 0.2) return toast("Mueve el cabezal blanco dentro de la pista para dividirla");
+        const b = { ...a, id: uid(), start: st.t, offset: a.offset + cut, dur: a.dur - cut, eq: [...a.eq] };
+        await mutate((p) => { a.dur = cut; p.audios.push(b); });
+        return toast("Pista dividida ✂");
+      }
+      case "adup": {
+        const a = findSel();
+        const b = { ...a, id: uid(), start: a.start + a.dur, eq: [...a.eq] };
+        await mutate((p) => p.audios.push(b));
+        return select({ type: "audio", id: b.id });
+      }
+      case "adel":
+        await mutate((p) => { p.audios = p.audios.filter((x) => x.id !== st.sel.id); });
         return select(null);
       default:
         st.tool = st.tool === id ? null : id;
@@ -882,7 +1272,7 @@
     if (!id || !st.p) { P.hidden = true; P.innerHTML = ""; return; }
     const c = st.sel?.type === "clip" ? findSel() : null;
     const tx = st.sel?.type === "text" ? findSel() : null;
-    const m = st.p.music;
+    const a = st.sel?.type === "audio" ? findSel() : null;
     const T = total();
     const secs = (v) => v.toFixed(1) + " s";
     const pct = (v) => Math.round(v * 100) + "%";
@@ -993,32 +1383,97 @@
           row(btn("Empieza en el cabezal", () => mutate(() => { tx.start = Math.min(st.t, tx.end - 0.2); }).then(renderPanel)),
               btn("Termina en el cabezal", () => mutate(() => { tx.end = Math.max(st.t, tx.start + 0.2); }).then(renderPanel))),
           btn("Mostrar durante todo el reel", () => mutate(() => { tx.start = 0; tx.end = T; }).then(renderPanel), "btn wide"));
-      case "mchange": {
-        if (!audios.length) {
-          return showPanel("Música", el("p", "hint", "Aún no tienes audios. Súbelos en la pestaña Audio (canciones, notas de voz o el audio de un video)."));
-        }
-        return showPanel("Elige la música",
-          chips(audios.map((a) => [a.id, "♫ " + a.name]), m?.audioId, (v) =>
-            mutate((p) => { p.music = { audioId: v, offset: 0, volume: 0.9, fadeIn: true, fadeOut: true, ...(p.music ? { offset: 0, volume: p.music.volume } : {}), audioId: v }; }, { rebuild: true })
-              .then(() => select({ type: "music", id: "music" }, "mvol")), true),
-          el("p", "hint", "💡 Para monetizar, usa música propia o libre de derechos. Si quieres una canción de moda, agrégala desde la app (TikTok, Instagram…) al publicar."));
+      case "aadd": {
+        const at = clamp(st.t, 0, Math.max(0, T - 0.1));
+        const add = async (src, ref) => {
+          const tmp = newAudioBlock(src, ref, at, 1);
+          const e = await loadBuf(tmp);
+          if (!e) return toast("No se pudo leer ese audio");
+          const room = T - at;
+          tmp.dur = Math.max(0.3, room > 0.5 ? Math.min(e.buf.duration, room) : e.buf.duration);
+          await mutate((p) => p.audios.push(tmp), { rebuild: true });
+          select({ type: "audio", id: tmp.id }, "avol");
+          toast("Audio agregado en " + fmt(at));
+        };
+        return showPanel("Agregar audio en el cabezal (" + fmt(at) + ")",
+          audios.length
+            ? chips(audios.map((x) => [x.id, "♫ " + x.name]), null, (v) => add("audio", v), true)
+            : el("p", "hint", "Aún no tienes audios. Súbelos en la pestaña Audio (canciones, notas de voz o el audio de un video)."),
+          btn("🎙 Grabar voz en off", () => { st.tool = "rec"; renderTools(); renderPanel(); }, "btn wide"),
+          el("p", "hint", "Puedes poner varias pistas a la vez (música + voz + efectos). Para sacar el audio de un video de la línea de tiempo, tócalo y usa ⇣♫ Separar audio."),
+          el("p", "hint", "💡 Para monetizar, usa música propia o libre de derechos. Las canciones de moda agrégalas desde la app (TikTok, Instagram…) al publicar."));
       }
-      case "mvol": {
-        const vids = st.p.clips.filter((x) => x.kind === "video");
+      case "rec": {
+        const status = el("p", "hint", "Se reproduce el reel sin sonido mientras grabas, para que hables al ritmo de las imágenes. Usa audífonos si puedes.");
+        const go = btn(st.rec ? "■ Detener grabación" : "● Grabar desde " + fmt(st.t), () => (st.rec ? stopRecording() : startRecording(status)), "btn wide primary rec-btn");
+        return showPanel("Voz en off", go, status);
+      }
+      case "avol":
         return showPanel("Volumen",
-          slider("Música", 0, 1.5, 0.05, m.volume, pct, (v) => mutate(() => { m.volume = v; }, { key: "mv" })),
-          vids.length ? slider("Audio videos", 0, 2, 0.05, vids[0].volume, pct, (v) => mutate(() => vids.forEach((x) => { x.volume = v; }), { key: "ov" })) : "",
-          el("p", "hint", "Se aplica al reproducir y al exportar."));
+          slider("Volumen", 0, 2, 0.05, a.volume, pct, (v) => mutate(() => { a.volume = v; }, { key: "av" + a.id })),
+          (() => {
+            const l = el("label", "check row");
+            const cb = document.createElement("input");
+            cb.type = "checkbox";
+            cb.checked = a.loop;
+            cb.addEventListener("change", () => mutate(() => {
+              a.loop = cb.checked;
+              if (!a.loop) a.dur = Math.min(a.dur, srcDur(a) - a.offset);
+              else if (a.dur < T - a.start) a.dur = Math.max(a.dur, T - a.start);
+            }));
+            l.append(cb, document.createTextNode(" 🔁 Repetir hasta llenar el reel"));
+            return l;
+          })(),
+          (() => {
+            const vids = st.p.clips.filter((x) => x.kind === "video");
+            return vids.length ? slider("Audio de videos", 0, 2, 0.05, vids[0].volume, pct, (v) => mutate(() => vids.forEach((x) => { x.volume = v; }), { key: "ov" })) : "";
+          })(),
+          btn("▶ Escuchar desde esta pista", () => { st.t = a.start; play(); }, "btn wide"));
+      case "afade":
+        return showPanel("Fundidos (entrada y salida suave)",
+          slider("Entrada", 0, 5, 0.1, a.fadeIn, secs, (v) => mutate(() => { a.fadeIn = v; }, { key: "afi" + a.id })),
+          slider("Salida", 0, 5, 0.1, a.fadeOut, secs, (v) => mutate(() => { a.fadeOut = v; }, { key: "afo" + a.id })),
+          btn("▶ Escuchar", () => { st.t = a.start; play(); }, "btn wide"));
+      case "afx":
+        return showPanel("Efecto de sonido",
+          chips(FX, a.fx, (v) => mutate(() => { a.fx = v; }).then(() => { st.t = Math.max(a.start, Math.min(st.t, a.start + a.dur - 1)); play(); }), true),
+          el("p", "hint", "Eco y Sala para voces dramáticas, Teléfono y Radio para efectos, Bajo el agua para transiciones, Lo-fi para música relajada."));
+      case "aeq": {
+        const sl = [];
+        const set = (i) => (v) => mutate(() => { a.eq = [...(a.eq || [0, 0, 0])]; a.eq[i] = v; }, { key: "eq" + i + a.id });
+        const db = (v) => (v > 0 ? "+" : "") + Math.round(v) + " dB";
+        sl.push(slider("Graves", -12, 12, 1, a.eq[0], db, set(0)), slider("Medios", -12, 12, 1, a.eq[1], db, set(1)), slider("Agudos", -12, 12, 1, a.eq[2], db, set(2)));
+        return showPanel("Ecualizador",
+          chips(EQ_PRESETS, (a.eq || []).join(","), (v) => mutate(() => { a.eq = v.split(",").map(Number); }).then(renderPanel), true),
+          ...sl,
+          btn("▶ Escuchar", () => { st.t = Math.max(a.start, Math.min(st.t, a.start + a.dur - 1)); play(); }, "btn wide"));
       }
-      case "moff":
-        return showPanel("¿Desde qué parte empieza la canción?",
-          slider("Empieza en", 0, Math.max(0.5, (st.musicBuf?.duration || 1) - 1), 0.1, m.offset || 0, (v) => fmtTime(v), (v) =>
-            mutate(() => { m.offset = v; }, { key: "moff" })),
-          btn("▶ Escuchar desde el inicio del reel", () => { st.t = 0; play(); }, "btn wide"));
-      case "mfade":
-        return showPanel("Fundidos de la música",
-          chips([["in", "Entrada suave " + (m.fadeIn ? "✓" : "")], ["out", "Salida suave " + (m.fadeOut ? "✓" : "")]], null, (v) =>
-            mutate(() => { if (v === "in") m.fadeIn = !m.fadeIn; else m.fadeOut = !m.fadeOut; }).then(renderPanel)));
+      case "abeat": {
+        const e = bufOf(a);
+        const info = el("p", "hint", e?.beats ? `Ritmo: ${e.beats.bpm} BPM · golpes marcados en amarillo sobre la pista.` : "Mog busca los golpes de la música para que tus fotos cambien al ritmo.");
+        const fit = (k) => {
+          const b = detectBeats(e);
+          const photos = st.p.clips.filter((c) => c.kind === "photo");
+          if (!photos.length) return toast("Este reel no tiene fotos para ajustar");
+          const step = b.period * k;
+          // la pista empieza justo en un golpe para que los cortes coincidan
+          const first = b.times.find((t) => t >= a.offset - 0.001) ?? a.offset;
+          mutate((p) => {
+            photos.forEach((c) => { c.dur = step; });
+            a.offset = first;
+            a.start = 0;
+            const newT = p.clips.reduce((s, c) => s + clipDur(c), 0);
+            if (!a.loop) a.dur = Math.min(srcDur(a) - a.offset, Math.max(a.dur, newT));
+            else a.dur = Math.max(a.dur, newT);
+          }).then(() => { toast(`Fotos al ritmo: cada ${step.toFixed(2)} s ✓`); st.t = 0; play(); });
+        };
+        return showPanel("Ritmo (beat sync)",
+          btn(e?.beats ? "✓ Ritmo detectado" : "🥁 Detectar ritmo", () => { if (!e) return; detectBeats(e); renderTimeline(); renderPanel(); }, "btn wide"),
+          info,
+          e?.beats ? label("Cambiar de foto en cada…") : "",
+          e?.beats ? chips([[1, "Golpe"], [2, "2 golpes"], [4, "4 golpes (compás)"]], null, fit, true) : "",
+          e?.beats ? el("p", "hint", "Al arrastrar bloques, sus bordes se imantan a los golpes amarillos.") : "");
+      }
     }
     P.hidden = true;
   }
@@ -1042,15 +1497,21 @@
     const off = new OfflineAudioContext(1, Math.max(1, Math.ceil(T * SR)), SR);
     let any = false;
     if (source === "music") {
-      const m = st.p.music;
-      const rec = m && (await DB.get("audios", m.audioId));
-      if (!rec) return null;
-      const buf = await off.decodeAudioData(await rec.blob.arrayBuffer());
-      const src = off.createBufferSource();
-      src.buffer = buf;
-      src.connect(off.destination);
-      src.start(0, (rec.start || 0) + (m.offset || 0));
-      any = true;
+      // todas las pistas de audio del reel (canciones, voz en off, audio separado)
+      for (const a of st.p.audios) {
+        const rec = await DB.get(a.src === "audio" ? "audios" : "media", a.ref);
+        if (!rec) continue;
+        let buf;
+        try { buf = await off.decodeAudioData(await rec.blob.arrayBuffer()); } catch { continue; }
+        const src = off.createBufferSource();
+        src.buffer = buf;
+        src.loop = !!a.loop;
+        if (a.loop) { src.loopStart = (rec.start || 0) + a.offset; src.loopEnd = rec.end || buf.duration; }
+        src.connect(off.destination);
+        src.start(a.start, (rec.start || 0) + a.offset, a.loop ? undefined : a.dur);
+        if (a.loop) src.stop(a.start + a.dur);
+        any = true;
+      }
     } else {
       for (const o of st.L) {
         const c = o.c;
@@ -1144,7 +1605,7 @@
     try {
       say("Preparando el audio…");
       const audio = await speechTrack(subOpts.source);
-      if (!audio) return say(subOpts.source === "music" ? "Este reel no tiene música." : "Tus clips no tienen voz: agrega un video con audio o elige “Letra de la música”.");
+      if (!audio) return say(subOpts.source === "music" ? "Este reel no tiene pistas de audio." : "Tus clips no tienen voz: agrega un video con audio o elige “Letra de la música”.");
       if (loudness(audio) < 0.004) return say("No se escucha nada en el audio elegido.");
       const res = await transcribe(audio, say);
       const raw = cleanChunks(res.chunks, total());
@@ -1172,7 +1633,7 @@
 
   function subsPanel() {
     const hasVoice = st.p.clips.some((c) => c.kind === "video" && !c.muted);
-    if (!hasVoice && st.p.music) subOpts.source = "music";
+    if (!hasVoice && st.p.audios.length) subOpts.source = "music";
     const count = st.p.texts.filter((t) => t.sub).length;
     const status = el("p", "hint", count ? `Este reel tiene ${count} subtítulos.` : "");
     const go = btn(count ? "✨ Volver a generar" : "✨ Generar subtítulos", () => generateSubs((t) => (status.textContent = t), go), "btn wide primary");
@@ -1181,7 +1642,7 @@
       el("p", "hint", "Mog escucha el audio y escribe los subtítulos con su tiempo. Todo pasa en tu teléfono: la primera vez descarga el modelo de voz y luego funciona sin internet."),
       go, status,
       label("¿Qué transcribir?"),
-      chips([["voice", "🎙 Voz de los videos"], ["music", "♫ Letra de la música"]], subOpts.source, set("source"), true),
+      chips([["voice", "🎙 Voz de los videos"], ["music", "♫ Pistas de audio (letra o voz en off)"]], subOpts.source, set("source"), true),
       label("Idioma"),
       chips([["spanish", "Español"], ["english", "Inglés"], ["portuguese", "Portugués"], ["", "Detectar"]], subOpts.lang, set("lang"), true),
       label("Estilo"),
@@ -1195,6 +1656,65 @@
       label("Modelo de voz"),
       chips([["onnx-community/whisper-base", "Preciso · 77 MB"], ["onnx-community/whisper-tiny", "Rápido · 41 MB"]], subOpts.model, set("model"), true),
       count ? btn(`Borrar los ${count} subtítulos`, () => mutate((p) => { p.texts = p.texts.filter((t) => !t.sub); p.subRaw = null; }).then(renderPanel), "btn wide danger") : "");
+  }
+
+  /* ---------------- Voz en off (micrófono) ---------------- */
+
+  async function startRecording(status) {
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) return toast("Este teléfono no permite grabar aquí");
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+    } catch {
+      status.textContent = "Mog necesita permiso para usar el micrófono. Actívalo y vuelve a intentarlo.";
+      return;
+    }
+    const mime = ["audio/webm;codecs=opus", "audio/mp4", "audio/webm"].find((m) => MediaRecorder.isTypeSupported(m));
+    const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : {});
+    const chunks = [];
+    rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+    ensureAudio();
+    st.master.gain.value = 0; // el reel se ve pero no se oye mientras grabas
+    st.rec = { rec, stream, chunks, startT: st.t, t0: performance.now() };
+    rec.start(200);
+    if (st.L.length && st.t < total() - 0.1) play();
+    renderPanel();
+    st.rec.timer = setInterval(() => {
+      const b = document.querySelector(".rec-btn");
+      if (b && st.rec) b.textContent = "■ Detener · " + ((performance.now() - st.rec.t0) / 1000).toFixed(1) + " s";
+    }, 200);
+  }
+
+  function abortRecording() {
+    const r = st.rec;
+    if (!r) return null;
+    st.rec = null;
+    clearInterval(r.timer);
+    st.master.gain.value = 1;
+    return r;
+  }
+
+  async function stopRecording() {
+    const r = abortRecording();
+    if (!r) return;
+    const done = new Promise((res) => (r.rec.onstop = res));
+    r.rec.stop();
+    await done;
+    r.stream.getTracks().forEach((t) => t.stop());
+    pause();
+    const blob = new Blob(r.chunks, { type: r.rec.mimeType || "audio/webm" });
+    if (blob.size < 2000) { toast("La grabación quedó vacía"); return renderPanel(); }
+    const n = audios.filter((x) => /^Voz en off/.test(x.name)).length + 1;
+    const id = uid();
+    await DB.put("audios", { id, name: "Voz en off " + n, blob, created: Date.now() });
+    await refreshAudios();
+    const a = newAudioBlock("audio", id, r.startT, 1, { rec: true });
+    const e = await loadBuf(a);
+    if (!e) { toast("No se pudo leer la grabación"); return renderPanel(); }
+    a.dur = e.buf.duration;
+    await mutate((p) => p.audios.push(a), { rebuild: true });
+    select({ type: "audio", id: a.id });
+    toast("Voz en off agregada 🎙 (también quedó en tu pestaña Audio)");
   }
 
   /* ---------------- Agregar medios ---------------- */
@@ -1317,7 +1837,7 @@
     st.sel = null;
     st.tool = null;
     st.t = 0;
-    st.musicKey = null;
+    migrateProject(p);
     ensureAudio();
     st.actx.resume().catch(() => {});
     $("#stName").textContent = p.name;
@@ -1330,7 +1850,7 @@
     renderPanel();
     if (p.clips.length) toast("Cargando…", 1200);
     for (const c of p.clips) await loadEl(c);
-    await ensureMusic();
+    await ensureBufs();
     await changed(false);
     st.hist = [];
     $("#stUndo").disabled = $("#stRedo").disabled = true;
@@ -1338,7 +1858,10 @@
 
   function closeStudio(refresh = true) {
     if (!st.p) return;
+    const r = abortRecording();
+    if (r) { try { r.rec.stop(); } catch {} r.stream.getTracks().forEach((t) => t.stop()); }
     pause();
+    st.bufs.clear();
     cancelAnimationFrame(st.drawRaf);
     for (const id of [...st.els.keys()]) dropEl(id);
     const done = saveNow();
@@ -1478,7 +2001,7 @@
     const hook = $("#autoHook").value.trim();
     if (hook) p.texts.push(newText(hook, 0, Math.min(2.8, T), { style: "box", anim: "pop", y: 0.14 }));
     if (T > 5) p.texts.push(newText(CTAS[0], T - 2.2, T, { style: "box", anim: "slide", y: 0.86 }));
-    if (audioId) p.music = { audioId, offset: 0, volume: 0.9, fadeIn: true, fadeOut: true };
+    if (audioId) p.audios.push(newAudioBlock("audio", audioId, 0, T, { volume: 0.9, fadeIn: 1.5, fadeOut: 1.5, loop: true }));
     await DB.put("projects", p);
     closeSheet($("#fmtSheet"));
     await openProject(p.id);
@@ -1564,7 +2087,7 @@
     st.exp = null;
     st.playing = false;
     cancelAnimationFrame(st.raf);
-    stopMusic();
+    stopAudios();
     for (const e of st.els.values()) if (e.kind === "video") e.el.pause();
     $("#stPlay").textContent = "▶";
     ex.rec.onstop = () => {

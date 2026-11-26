@@ -61,7 +61,7 @@
 
 .st-timeline {
   position: relative; flex: none; height: var(--tlh, 132px); overflow-x: auto; overflow-y: hidden; background: #0d0d10;
-  border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); scrollbar-width: none; touch-action: pan-x;
+  border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); scrollbar-width: none; touch-action: pan-x pan-y;
 }
 .st-timeline::-webkit-scrollbar { display: none; }
 .st-tracks { position: relative; height: 100%; }
@@ -207,3 +207,12 @@
 #cropRatios { margin-bottom: 8px; }
 #cropRatios button { flex: none; border: 1px solid var(--line); background: var(--surface); border-radius: 99px; padding: 8px 12px; font-weight: 600; font-size: 13px; cursor: pointer; }
 #cropRatios button.on { background: var(--text); color: var(--ink); border-color: var(--text); }
+
+/* ---------------- Deshacer rápido ---------------- */
+.undo-bar {
+  position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(78px + var(--safe-b)); z-index: 45;
+  display: flex; align-items: center; gap: 12px; padding: 6px 6px 6px 16px; border-radius: 99px;
+  background: #fff; color: #0b0b0b; font-weight: 700; font-size: 14px; box-shadow: 0 8px 24px rgba(0,0,0,.5); white-space: nowrap;
+}
+.undo-bar button { border: 0; border-radius: 99px; background: var(--red); color: #fff; font-weight: 800; font-size: 14px; padding: 9px 16px; cursor: pointer; }
+.st-bar #stUndo, .st-bar #stRedo { font-size: 26px; }

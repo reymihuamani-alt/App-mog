@@ -158,7 +158,10 @@
     st.bufs.set(k, entry);
     return entry;
   }
-  async function ensureBufs() { for (const a of st.p.audios) await loadBuf(a); }
+  async function ensureBufs() {
+    for (const a of st.p.audios) await loadBuf(a);
+    for (const o of st.p.overlays || []) if (o.sound) await loadBuf({ src: "audio", ref: o.sound.audioId });
+  }
   const bufOf = (a) => st.bufs.get(bufKey(a));
   const srcDur = (a) => bufOf(a)?.buf.duration || a.offset + a.dur;
 
@@ -316,6 +319,21 @@
     stopAudios();
     const T = total();
     const now = st.actx.currentTime + 0.02;
+    // sonido de los stickers: suena cuando el sticker aparece
+    for (const o of st.p.overlays) {
+      if (!o.sound || o.start < t - 0.05 || o.start >= T) continue;
+      const e = st.bufs.get("audio:" + o.sound.audioId);
+      if (!e) continue;
+      const src = st.actx.createBufferSource();
+      src.buffer = e.buf;
+      const g = st.actx.createGain();
+      g.gain.value = o.sound.volume ?? 1;
+      src.connect(g).connect(st.master);
+      const when = now + Math.max(0, o.start - t);
+      src.start(when);
+      src.stop(when + Math.min(e.buf.duration, Math.max(0.05, T - o.start)));
+      st.voices.push(src);
+    }
     for (const a of st.p.audios) {
       const e = bufOf(a);
       if (!e) continue;
@@ -623,6 +641,146 @@
     }
   }
 
+  /* ---------------- Efectos de sonido creados por Mog (sin derechos de autor) ---------------- */
+
+  const SFX = [["boom", "💥 Boom"], ["whoosh", "💨 Whoosh"], ["ding", "🔔 Ding"], ["pop", "🫧 Pop"]];
+
+  async function synthSfx(kind) {
+    const sr = 44100;
+    const dur = { boom: 1.6, whoosh: 0.8, ding: 1.4, pop: 0.25 }[kind];
+    const ctx = new OfflineAudioContext(1, Math.ceil(sr * dur), sr);
+    const out = ctx.createGain();
+    out.connect(ctx.destination);
+    const noise = () => {
+      const b = ctx.createBuffer(1, Math.ceil(sr * dur), sr);
+      const d = b.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+      const s = ctx.createBufferSource();
+      s.buffer = b;
+      return s;
+    };
+    if (kind === "boom") {
+      // golpe grave con caída de tono, un poco saturado
+      const o = ctx.createOscillator();
+      o.frequency.setValueAtTime(110, 0);
+      o.frequency.exponentialRampToValueAtTime(38, 0.5);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(1, 0);
+      g.gain.exponentialRampToValueAtTime(0.001, dur);
+      const ws = ctx.createWaveShaper();
+      const curve = new Float32Array(512);
+      for (let i = 0; i < 512; i++) { const x = i / 256 - 1; curve[i] = Math.tanh(3 * x); }
+      ws.curve = curve;
+      o.connect(g).connect(ws).connect(out);
+      o.start(0);
+      const n = noise();
+      const ng = ctx.createGain();
+      ng.gain.setValueAtTime(0.5, 0);
+      ng.gain.exponentialRampToValueAtTime(0.001, 0.08);
+      const lp = ctx.createBiquadFilter();
+      lp.type = "lowpass"; lp.frequency.value = 1800;
+      n.connect(lp).connect(ng).connect(out);
+      n.start(0);
+    } else if (kind === "whoosh") {
+      const n = noise();
+      const bp = ctx.createBiquadFilter();
+      bp.type = "bandpass"; bp.Q.value = 1.2;
+      bp.frequency.setValueAtTime(300, 0);
+      bp.frequency.exponentialRampToValueAtTime(4000, dur * 0.7);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.001, 0);
+      g.gain.exponentialRampToValueAtTime(0.9, dur * 0.55);
+      g.gain.exponentialRampToValueAtTime(0.001, dur);
+      n.connect(bp).connect(g).connect(out);
+      n.start(0);
+    } else if (kind === "ding") {
+      for (const [f, v] of [[1318.5, 0.5], [2637, 0.2], [3955, 0.08]]) {
+        const o = ctx.createOscillator();
+        o.frequency.value = f;
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(v, 0);
+        g.gain.exponentialRampToValueAtTime(0.0005, dur);
+        o.connect(g).connect(out);
+        o.start(0);
+      }
+    } else {
+      const o = ctx.createOscillator();
+      o.frequency.setValueAtTime(700, 0);
+      o.frequency.exponentialRampToValueAtTime(180, dur);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.8, 0);
+      g.gain.exponentialRampToValueAtTime(0.001, dur);
+      o.connect(g).connect(out);
+      o.start(0);
+    }
+    const buf = await ctx.startRendering();
+    return encodeWav([buf.getChannelData(0)], sr, false);
+  }
+
+  // Devuelve el id del efecto guardado en la pestaña Audio (lo crea la primera vez).
+  async function sfxAudioId(kind) {
+    const name = "Efecto: " + SFX.find((x) => x[0] === kind)[1].replace(/^\S+\s/, "");
+    const existing = audios.find((a) => a.name === name);
+    if (existing) return existing.id;
+    const id = uid();
+    await DB.put("audios", { id, name, blob: await synthSfx(kind), created: Date.now() });
+    await refreshAudios();
+    return id;
+  }
+
+  /* ---------------- Mis stickers (guardados para reusar) ---------------- */
+
+  const STK_KEYS = ["emoji", "badge", "color", "bar", "barStyle", "txt", "tstyle", "scale", "rot", "anim", "opacity", "sound", "y", "x"];
+  const myStickers = () => store.get("myStickers", []);
+  function saveMySticker(o) {
+    const data = {};
+    for (const k of STK_KEYS) if (o[k] !== undefined) data[k] = structuredClone(o[k]);
+    data.len = +(o.end - o.start).toFixed(2);
+    const label = (o.emoji || o.badge || o.bar || o.txt || "Sticker").slice(0, 18) + (o.sound ? " 🔊" : "");
+    store.set("myStickers", [{ id: uid(), label, data }, ...myStickers()].slice(0, 30));
+    toast("Guardado en Mis stickers ✓");
+  }
+
+  // Texto libre dentro de un sticker (se mueve, gira y escala como cualquier sticker)
+  function drawStickerText(g, o, W) {
+    const fs = W * 0.07;
+    g.font = `800 ${fs}px ${FONT}`;
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    const style = o.tstyle || "box";
+    const text = style === "red" ? o.txt.toUpperCase() : o.txt;
+    const lines = wrapText(g, text, W * 0.8);
+    const lh = fs * 1.22;
+    const w = Math.max(...lines.map((l) => g.measureText(l).width)) + fs * 0.8;
+    const h = lines.length * lh + fs * 0.3;
+    const top = -h / 2 + fs * 0.15;
+    if (style === "bar") { g.fillStyle = "#f3f8f1"; g.fillRect(-w / 2, -h / 2, w, h); }
+    lines.forEach((l, i) => {
+      const y = top + lh * i + lh / 2;
+      switch (style) {
+        case "box": {
+          const lw = g.measureText(l).width + fs * 0.7;
+          g.fillStyle = "#fff";
+          roundPath(g, -lw / 2, y - lh / 2, lw, lh, fs * 0.25);
+          g.fill();
+          g.fillStyle = "#0b0b0b";
+          g.fillText(l, 0, y + fs * 0.04);
+          break;
+        }
+        case "bar": g.fillStyle = "#0b0b0b"; g.fillText(l, 0, y); break;
+        case "red": g.shadowColor = "rgba(0,0,0,.45)"; g.shadowBlur = fs * 0.2; g.fillStyle = "#ef3b2d"; g.fillText(l, 0, y); g.shadowBlur = 0; break;
+        case "neon": g.shadowColor = "#ff2bd6"; g.shadowBlur = fs * 0.6; g.fillStyle = "#fff"; g.fillText(l, 0, y); g.fillText(l, 0, y); g.shadowBlur = 0; break;
+        case "plain": g.shadowColor = "rgba(0,0,0,.7)"; g.shadowBlur = fs * 0.25; g.fillStyle = "#fff"; g.fillText(l, 0, y); g.shadowBlur = 0; break;
+        default: // white / yellow / karaoke
+          g.lineJoin = "round"; g.lineWidth = fs * 0.16; g.strokeStyle = "#000";
+          g.strokeText(l, 0, y);
+          g.fillStyle = style === "yellow" ? "#ffd60a" : "#fff";
+          g.fillText(l, 0, y);
+      }
+    });
+    return [w, h];
+  }
+
   /* ---------------- Capas: stickers y video sobre video ---------------- */
 
   const EMOJIS = ["🔥", "💧", "✨", "❤️", "😍", "😂", "🙌", "💪", "👀", "💯", "⭐", "🌙", "☀️", "🌸", "🥀", "💅", "🧴", "🏋️", "🥤", "⏰", "👉", "👇", "✅", "❌", "🎉", "💸", "📌", "🤯", "😴", "🫶"];
@@ -731,7 +889,9 @@
     if (o.kind === "sticker") {
       g.textAlign = "center";
       g.textBaseline = "middle";
-      if (o.bar) {
+      if (o.txt != null) {
+        [w, h] = drawStickerText(g, o, W);
+      } else if (o.bar) {
         const [, , bg, fg] = BAR_STYLES.find((b) => b[0] === o.barStyle) || BAR_STYLES[0];
         const fs = W * 0.075;
         const heavy = o.barStyle !== "thin";
@@ -889,7 +1049,7 @@
     if (!gest) return;
     if (ptrs.size === 0) {
       if (!gest.moved) st.hist.pop();
-      else { st.lastKey = ""; changed(false); renderPanel(); }
+      else { st.lastKey = ""; changed(false); renderPanel(); undoToast(gest.type === "ov" ? "Capa movida" : "Texto movido"); }
       gest = null;
     } else if (ptrs.size === 1) {
       const pt = [...ptrs.values()][0];
@@ -1119,7 +1279,8 @@
         node.removeEventListener("pointerup", up);
         node.removeEventListener("pointercancel", up);
         if (moved) { st.justDragged = true; setTimeout(() => (st.justDragged = false), 60); }
-        onEnd(secs(), moved, dy);
+        const n0 = st.changes || 0;
+        Promise.resolve(onEnd(secs(), moved, dy)).then(() => { if (moved && (st.changes || 0) > n0) undoToast("Bloque cambiado"); });
       };
       node.addEventListener("pointermove", mv);
       node.addEventListener("pointerup", up);
@@ -1210,7 +1371,8 @@
     // filas: regla · clips · capas (stickers / video sobre video) · textos · audio
     const clipTop = 22, ovTop = 82, textTop = ovTop + Math.max(ovl.n, 1) * 28, audTop = textTop + 30;
     const fullH = audTop + nl * 28 + 6;
-    const tlh = Math.min(fullH, 214); // si hay muchas filas, la línea de tiempo se desliza en vertical
+    // la línea de tiempo crece hasta ~42% de la pantalla para que se vean todas las pistas; si no caben, se desliza en vertical
+    const tlh = Math.min(fullH, Math.max(214, Math.round(innerHeight * 0.42)));
     $("#studio").style.setProperty("--tlh", tlh + "px");
     tl.style.overflowY = fullH > tlh ? "auto" : "hidden";
     $("#stClips").style.top = clipTop + "px";
@@ -1316,7 +1478,7 @@
       b.style.width = Math.max(14, (end - o.start) * pps - 2) + "px";
       const e = st.els.get(o.id);
       if (e?.thumb) b.style.backgroundImage = `url("${e.thumb}")`;
-      b.append(el("b", "", o.kind === "sticker" ? (o.emoji || o.badge || "▬ " + o.bar) : (o.kind === "video" ? "▣ Video" : "◉ Foto") + (o.chroma ? " 🟩" : "") + (o.crop || o.rot90 || o.flip ? " ⛶" : "")));
+      b.append(el("b", "", o.kind === "sticker" ? (o.txt != null ? "T " + o.txt : o.emoji || o.badge || "▬ " + o.bar) + (o.sound ? " 🔊" : "") : (o.kind === "video" ? "▣ Video" : "◉ Foto") + (o.chroma ? " 🟩" : "") + (o.crop || o.rot90 || o.flip ? " ⛶" : "")));
       b.addEventListener("click", (ev) => { ev.stopPropagation(); if (!st.justDragged) select({ type: "ov", id: o.id }); });
       const pts = snapPoints(o.id);
       const len = end - o.start;
@@ -1478,6 +1640,7 @@
     }
     st.lastKey = key;
     st.lastAt = now;
+    st.changes = (st.changes || 0) + 1;
     fn(st.p);
     return changed(rebuild);
   }
@@ -1498,6 +1661,28 @@
     $("#stUndo").disabled = !st.hist.length;
     $("#stRedo").disabled = !st.fut.length;
     scheduleSave();
+  }
+
+  // Aviso con botón "Deshacer" después de mover, recortar o borrar
+  let undoTimer = 0;
+  function undoToast(msg) {
+    let b = $("#undoBar");
+    if (!b) {
+      b = el("div", "undo-bar");
+      b.id = "undoBar";
+      const btnU = el("button", "", "↶ Deshacer");
+      btnU.addEventListener("click", async () => {
+        b.hidden = true;
+        await undoRedo(st.hist, st.fut);
+        toast("Deshecho: volvió como estaba ↶");
+      });
+      b.append(el("span"), btnU);
+      document.body.append(b);
+    }
+    b.querySelector("span").textContent = msg;
+    b.hidden = false;
+    clearTimeout(undoTimer);
+    undoTimer = setTimeout(() => (b.hidden = true), 5000);
   }
 
   async function undoRedo(from, to) {
@@ -1584,7 +1769,7 @@
     if (s?.type === "text") {
       return [
         ["back", "‹", "Atrás"], ["edit", "✎", "Editar"], ["tstyle", "Aa", "Estilo"], ["tanim", "✦", "Animación"],
-        ["tsize", "A↕", "Tamaño"], ["tpos", "↕", "Posición"], ["ttime", "⏱", "Tiempo"], ["tdup", "⧉", "Duplicar"],
+        ["tsize", "A↕", "Tamaño"], ["tpos", "↕", "Posición"], ["ttime", "⏱", "Tiempo"], ["tostk", "😀", "A sticker"], ["tdup", "⧉", "Duplicar"],
         ["tdel", "🗑", "Borrar", "danger"],
       ];
     }
@@ -1596,7 +1781,9 @@
         ...(k !== "sticker" ? [["ocrop", "⛶", "Encuadre"], ["oshape", "◯", "Forma"]] : []), ["oopa", "◐", "Opacidad"],
         ...(k !== "sticker" ? [["tomain", "⇡", "A pista principal"]] : []),
         ...(k === "video" ? [["otrim", "⇤⇥", "Recortar"], ["ovol", "🔊", "Volumen"], ["ochroma", "🟩", "Fondo verde"]] : []),
-        ...(k === "sticker" && (o.badge || o.bar) ? [["otext", "✎", "Texto"]] : []),
+        ...(k === "sticker" && (o.badge || o.bar || o.txt != null) ? [["otext", "✎", "Texto"]] : []),
+        ...(k === "sticker" && o.txt != null ? [["otstyle", "Aa", "Estilo"]] : []),
+        ...(k === "sticker" ? [["osnd", "🔊", "Sonido"], ["osave", "💾", "Guardar"]] : []),
         ...(k === "sticker" && o.bar ? [["obar", "▬", "Estilo"]] : []),
         ...(k === "sticker" && o.badge ? [["ocolor", "🎨", "Color"]] : []),
         ["ofront", "⬆", "Al frente"], ["oback", "⬇", "Al fondo"], ["odup", "⧉", "Duplicar"], ["odel", "🗑", "Borrar", "danger"],
@@ -1701,15 +1888,23 @@
       }
       case "del":
         await mutate((p) => { p.clips = p.clips.filter((x) => x !== c); }, { rebuild: true });
-        return select(null);
+        select(null);
+        return undoToast("Clip borrado");
       case "tdup": {
         const b = { ...tx, id: uid() };
         await mutate((p) => p.texts.push(b));
         return select({ type: "text", id: b.id });
       }
+      case "tostk": {
+        const stk = newSticker({ txt: tx.text, tstyle: tx.style === "karaoke" ? "white" : tx.style, start: tx.start, end: tx.end, x: 0.5, y: tx.y, scale: tx.size / 7, anim: tx.anim === "none" ? "none" : "pop" });
+        await mutate((p) => { p.texts = p.texts.filter((x) => x !== tx); p.overlays.push(stk); });
+        select({ type: "ov", id: stk.id }, "osnd");
+        return toast("Ahora es un sticker: muévelo, gíralo y ponle sonido 🔊");
+      }
       case "tdel":
         await mutate((p) => { p.texts = p.texts.filter((x) => x !== tx); });
-        return select(null);
+        select(null);
+        return undoToast("Texto borrado");
       case "asplit": {
         const a = findSel();
         const cut = st.t - a.start;
@@ -1738,10 +1933,12 @@
       }
       case "odel":
         await mutate((p) => { p.overlays = p.overlays.filter((x) => x.id !== st.sel.id); }, { rebuild: true });
-        return select(null);
+        select(null);
+        return undoToast("Capa borrada");
       case "adel":
         await mutate((p) => { p.audios = p.audios.filter((x) => x.id !== st.sel.id); });
-        return select(null);
+        select(null);
+        return undoToast("Audio borrado");
       default:
         st.tool = st.tool === id ? null : id;
         renderTools();
@@ -1922,10 +2119,35 @@
           b.addEventListener("click", () => add(newOvPhoto(ph.id, at, end)));
           grid.append(b);
         }
+        const mine = myStickers();
+        let delMode = false;
+        const mineRow = chips(mine.map((m) => [m.id, m.label]), null, (id) => {
+          const m = myStickers().find((x) => x.id === id);
+          if (!m) return;
+          if (delMode) {
+            store.set("myStickers", myStickers().filter((x) => x.id !== id));
+            return renderPanel();
+          }
+          const { len, ...d } = m.data;
+          const stk = newSticker({ ...structuredClone(d), start: at, end: Math.max(at + 0.3, Math.min(at + (len || 3), Math.max(T, at + 1))) });
+          mutate((p) => p.overlays.push(stk), { rebuild: true }).then(() => select({ type: "ov", id: stk.id }, "omove"));
+        }, true);
+        const ftxt = document.createElement("input");
+        ftxt.placeholder = "Escribe un texto para usarlo como sticker";
+        ftxt.maxLength = 80;
         const own = document.createElement("input");
         own.placeholder = "Escribe tu texto y toca Agregar";
         own.maxLength = 24;
         return showPanel("Stickers (se agregan en " + fmt(at) + ")",
+          ...(mine.length ? [label("💾 Mis stickers"), mineRow,
+            btn("Borrar de Mis stickers…", (ev) => { delMode = !delMode; ev.target.textContent = delMode ? "Toca un sticker para borrarlo (toca aquí para terminar)" : "Borrar de Mis stickers…"; }, "btn wide")] : []),
+          label("Texto como sticker (muévelo, gíralo y ponle sonido)"),
+          ftxt,
+          btn("＋ Agregar texto como sticker", () => {
+            const t = ftxt.value.trim();
+            if (!t) return toast("Escribe el texto");
+            add(newSticker({ txt: t, tstyle: "box", start: at, end, y: 0.45, anim: "pop" }));
+          }, "btn wide"),
           label("Barra de censura (estilo MOGGED)"),
           chips(BARS.map((t) => [t, "▬ " + t]), null, (t) => add(newSticker({ bar: t, barStyle: "heavy", start: at, end, y: 0.33, rot: -15, anim: "none" })), true),
           own,
@@ -1980,12 +2202,39 @@
       case "otext": {
         const inp = document.createElement("input");
         inp.maxLength = 24;
-        inp.value = ov.bar || ov.badge || "";
-        inp.addEventListener("input", () => mutate(() => { if (ov.bar != null) ov.bar = inp.value || " "; else ov.badge = inp.value || " "; }, { key: "otx" + ov.id }));
+        inp.maxLength = ov.txt != null ? 80 : 24;
+        inp.value = ov.txt ?? ov.bar ?? ov.badge ?? "";
+        inp.addEventListener("input", () => mutate(() => {
+          const v = inp.value || " ";
+          if (ov.txt != null) ov.txt = v; else if (ov.bar != null) ov.bar = v; else ov.badge = v;
+        }, { key: "otx" + ov.id }));
         setTimeout(() => inp.focus(), 50);
         return showPanel("Texto del sticker", inp,
           ov.bar != null ? chips(BARS.map((t) => [t, t]), null, (t) => { inp.value = t; mutate(() => { ov.bar = t; }); }, true) : "");
       }
+      case "otstyle":
+        return showPanel("Estilo del texto", chips(TSTYLES.filter((x) => x[0] !== "karaoke"), ov.tstyle || "box", (v) => mutate(() => { ov.tstyle = v; }), true));
+      case "osnd": {
+        const vol = slider("Volumen", 0, 2, 0.05, ov.sound?.volume ?? 1, pct, (v) => { if (ov.sound) mutate(() => { ov.sound.volume = v; }, { key: "osv" + ov.id }); });
+        const setSound = async (audioId) => {
+          await mutate(() => { ov.sound = audioId ? { audioId, volume: ov.sound?.volume ?? 1 } : undefined; if (!audioId) delete ov.sound; }, { rebuild: true });
+          renderPanel();
+          if (audioId) { st.t = Math.max(0, ov.start - 0.3); play(); }
+        };
+        return showPanel("Sonido al aparecer",
+          label("Efectos de Mog (libres de derechos)"),
+          chips(SFX, null, async (k) => setSound(await sfxAudioId(k)), true),
+          audios.length ? label("Tus audios") : "",
+          audios.length ? chips(audios.map((a) => [a.id, "♫ " + a.name]), ov.sound?.audioId, setSound, true) : "",
+          vol,
+          row(btn("▶ Probar", () => { st.t = Math.max(0, ov.start - 0.3); play(); }), btn("Sin sonido", () => setSound(null))),
+          el("p", "hint", "El sonido suena justo cuando aparece el sticker. Mueve el sticker en la línea de tiempo y el sonido se mueve con él."));
+      }
+      case "osave":
+        saveMySticker(ov);
+        st.tool = null;
+        renderTools();
+        return showPanel("Guardado en Mis stickers", el("p", "hint", "Encuéntralo en 😀 Stickers → Mis stickers para usarlo en cualquier reel, con su estilo, tamaño, giro y sonido."));
       case "obar":
         return showPanel("Estilo de la barra",
           chips(BAR_STYLES.map(([k, n]) => [k, n]), ov.barStyle || "heavy", (v) => mutate(() => { ov.barStyle = v; }), true),
@@ -2697,6 +2946,7 @@
 
   function closeStudio(refresh = true) {
     if (!st.p) return;
+    if ($("#undoBar")) $("#undoBar").hidden = true;
     const r = abortRecording();
     if (r) { try { r.rec.stop(); } catch {} r.stream.getTracks().forEach((t) => t.stop()); }
     pause();

@@ -24,6 +24,10 @@ Pestaña **Reels**: editor tipo CapCut para crear videos para TikTok, Instagram 
   La regla de tiempo de arriba sirve para desplazarse por el video.
 - **Encuadre:** recorta el marco de un video o foto como una imagen (libre, original, pantalla del reel, 9:16, 1:1, 4:5,
   3:4, 16:9), gira 90° y espejo.
+- **Texto como sticker con sonido:** escribe un texto (o convierte uno con “A sticker”), dale estilo, muévelo, gíralo y
+  ponle un sonido que suena al aparecer: efectos de Mog (Boom, Whoosh, Ding, Pop, sin derechos de autor) o tus audios.
+  Guárdalo en 💾 Mis stickers para reusarlo en cualquier reel.
+- **Deshacer rápido:** después de mover, recortar o borrar aparece “↶ Deshacer” para dejarlo como estaba.
 - **Barra de censura estilo “MOGGED”:** barra negra con letras rojas (gruesa o fina, blanca o barra roja), texto editable,
   inclinable con los dedos para ponerla sobre los ojos.
 - **Stickers:** emojis, etiquetas (SÍGUEME, LINK EN BIO, PARTE 2…) y tus fotos, con animaciones (pop, rebote, latido, flotar, girar, vibrar).

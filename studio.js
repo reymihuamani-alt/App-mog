@@ -60,7 +60,7 @@
 
   const st = {
     p: null, L: [], els: new Map(), urls: [],
-    actx: null, master: null, bufs: new Map(), voices: [], impulse: null, justDragged: false, rec: null,
+    actx: null, master: null, bufs: new Map(), voices: [], impulse: null, justDragged: false, rec: null, hits: [],
     t: 0, playing: false, a0: 0, t0: 0, raf: 0, drawRaf: 0,
     sel: null, tool: null, pps: 40, hist: [], fut: [], lastKey: "", lastAt: 0, saveT: 0, expectScroll: -1, exp: null,
   };
@@ -97,7 +97,7 @@
 
   const newProject = (format) => ({
     id: uid(), name: "Reel " + new Date().toLocaleDateString("es", { day: "numeric", month: "short" }),
-    format, clips: [], texts: [], audios: [], created: Date.now(), updated: Date.now(), duration: 0, thumb: null,
+    format, clips: [], texts: [], audios: [], overlays: [], created: Date.now(), updated: Date.now(), duration: 0, thumb: null,
   });
   const photoClip = (photoId, o = {}) => ({ id: uid(), kind: "photo", src: photoId, dur: 3, filter: "none", motion: "in", fit: "contain", trans: "none", ...o });
   const videoClip = (m) => ({
@@ -129,6 +129,7 @@
   // Los reels guardados antes tenían una sola "música": se convierte en una pista de audio.
   function migrateProject(p) {
     p.audios ||= [];
+    p.overlays ||= [];
     if (p.music) {
       const m = p.music;
       const T = p.clips.reduce((a, c) => a + clipDur(c), 0);
@@ -407,7 +408,7 @@
     st.els.delete(id);
   }
   function pruneEls() {
-    const ids = new Set(st.p.clips.map((c) => c.id));
+    const ids = new Set([...st.p.clips.map((c) => c.id), ...st.p.overlays.map((o) => o.id)]);
     for (const id of [...st.els.keys()]) if (!ids.has(id)) dropEl(id);
   }
 
@@ -440,6 +441,7 @@
         }
       }
     });
+    syncOverlays(t);
   }
 
   /* ---------------- Dibujo ---------------- */
@@ -486,7 +488,7 @@
     g.restore();
   }
 
-  function drawText(g, tx, lt, W, H) {
+  function drawText(g, tx, lt, W, H, ui = false) {
     const fs = Math.round((W * tx.size) / 100);
     const rawLt = lt;
     // En pausa (editando) el texto se ve completo; la animación solo corre al reproducir y exportar
@@ -574,9 +576,269 @@
       }
     });
     g.restore();
+    if (ui) {
+      const bh = lines.length * lh + fs * 0.5;
+      st.hits.push({ tx, x: W / 2, y: cy, w: W * 0.9, h: bh, rot: 0 });
+      if (isSel("text", tx.id)) {
+        g.save();
+        g.setLineDash([W * 0.015, W * 0.01]);
+        g.lineWidth = W * 0.004;
+        g.strokeStyle = "#fff";
+        g.strokeRect(W * 0.04, cy - bh / 2, W * 0.92, bh);
+        g.restore();
+      }
+    }
   }
 
-  function drawFrame(g, t, W, H) {
+  /* ---------------- Capas: stickers y video sobre video ---------------- */
+
+  const EMOJIS = ["🔥", "💧", "✨", "❤️", "😍", "😂", "🙌", "💪", "👀", "💯", "⭐", "🌙", "☀️", "🌸", "🥀", "💅", "🧴", "🏋️", "🥤", "⏰", "👉", "👇", "✅", "❌", "🎉", "💸", "📌", "🤯", "😴", "🫶"];
+  const BADGES = [
+    ["SÍGUEME", "#ef3b2d"], ["SUSCRÍBETE", "#ff0033"], ["❤ LIKE", "#ff2d55"], ["NUEVO", "#ffd60a"], ["POV", "#111111"],
+    ["PARTE 2", "#5b2a8c"], ["LINK EN BIO", "#0a84ff"], ["GUÁRDALO 📌", "#12543f"], ["ANTES", "#333333"], ["DESPUÉS", "#ef3b2d"],
+  ];
+  const COLORS = ["#ef3b2d", "#ff2d55", "#ffd60a", "#34c759", "#0a84ff", "#5b2a8c", "#111111", "#ffffff"];
+  const OANIMS = [["none", "Ninguna"], ["pop", "Pop"], ["bounce", "Rebote"], ["pulse", "Latido"], ["float", "Flotar"], ["spin", "Girar"], ["shake", "Vibrar"], ["slide", "Entrar"]];
+  const SHAPES = [["rect", "Rectángulo"], ["round", "Redondeado"], ["circle", "Círculo"]];
+  const ovEnd = (o) => (o.kind === "video" ? o.start + (o.trimEnd - o.trimStart) : o.end);
+  const isLight = (hex) => { const n = parseInt(hex.slice(1), 16); return ((n >> 16) * 299 + ((n >> 8) & 255) * 587 + (n & 255) * 114) / 1000 > 160; };
+  const newSticker = (o) => ({ id: uid(), kind: "sticker", start: 0, end: 3, x: 0.5, y: 0.42, scale: 1, rot: 0, anim: "pop", opacity: 1, ...o });
+  const newOvPhoto = (src, start, end) => ({ id: uid(), kind: "photo", src, start, end, x: 0.5, y: 0.36, scale: 1, rot: 0, shape: "circle", border: true, opacity: 1, anim: "pop" });
+  function newOvVideo(m, start) {
+    const room = total() - start;
+    return {
+      id: uid(), kind: "video", src: m.id, srcDur: m.duration, trimStart: 0, trimEnd: room > 1 ? Math.min(m.duration, room) : m.duration,
+      start, x: 0.7, y: 0.28, scale: 1, rot: 0, shape: "round", border: true, opacity: 1, volume: 1, muted: false, chroma: false, anim: "pop",
+    };
+  }
+
+  function syncOverlays(t) {
+    for (const o of st.p.overlays) {
+      if (o.kind !== "video") continue;
+      const e = st.els.get(o.id);
+      if (!e) continue;
+      const v = e.el;
+      if (t >= o.start && t < ovEnd(o)) {
+        const target = o.trimStart + (t - o.start);
+        if (e.gain) e.gain.gain.value = o.muted ? 0 : o.volume;
+        if (st.playing) {
+          if (v.paused) { if (Math.abs(v.currentTime - target) > 0.05) v.currentTime = target; v.play().catch(() => {}); }
+          else if (Math.abs(v.currentTime - target) > 0.35) v.currentTime = target;
+        } else {
+          if (!v.paused) v.pause();
+          if (Math.abs(v.currentTime - target) > 0.03) v.currentTime = target;
+        }
+      } else {
+        if (e.gain) e.gain.gain.value = 0;
+        if (!v.paused) v.pause();
+        if (o.start > t && o.start - t < 1.5 && !v.seeking && Math.abs(v.currentTime - o.trimStart) > 0.1) v.currentTime = o.trimStart;
+      }
+    }
+  }
+
+  function roundPath(g, x, y, w, h, r) {
+    g.beginPath();
+    if (g.roundRect) g.roundRect(x, y, w, h, r);
+    else g.rect(x, y, w, h);
+  }
+
+  // Pantalla verde: vuelve transparentes los píxeles donde el verde domina.
+  const ck = document.createElement("canvas");
+  const ckx = ck.getContext("2d", { willReadFrequently: true });
+  function chromaKey(src, sx, sy, sw, sh) {
+    const cw = Math.max(2, Math.min(480, Math.round(sw)));
+    const chh = Math.max(2, Math.round((cw * sh) / sw));
+    if (ck.width !== cw || ck.height !== chh) { ck.width = cw; ck.height = chh; }
+    ckx.clearRect(0, 0, cw, chh);
+    ckx.drawImage(src, sx, sy, sw, sh, 0, 0, cw, chh);
+    const d = ckx.getImageData(0, 0, cw, chh);
+    const p = d.data;
+    for (let i = 0; i < p.length; i += 4) {
+      const k = p[i + 1] - Math.max(p[i], p[i + 2]);
+      if (k > 40) p[i + 3] = 0;
+      else if (k > 12) { p[i + 3] = Math.round((255 * (40 - k)) / 28); p[i + 1] = Math.max(p[i], p[i + 2]); }
+    }
+    ckx.putImageData(d, 0, 0);
+    return ck;
+  }
+
+  function drawOverlay(g, o, lt, W, H, ui) {
+    const dur = ovEnd(o) - o.start;
+    const live = st.playing || !!st.exp;
+    const a = clamp(lt / 0.35, 0, 1);
+    const ease = 1 - Math.pow(1 - a, 3);
+    let sc = o.scale, rot = (o.rot * Math.PI) / 180, dx = 0, dy = 0, alpha = o.opacity;
+    if (live) {
+      switch (o.anim) {
+        case "pop": sc *= 0.5 + 0.5 * backOut(a); alpha *= Math.min(1, a * 2); break;
+        case "bounce": dy = -Math.abs(Math.sin(lt * 4)) * 0.03 * H; break;
+        case "pulse": sc *= 1 + 0.08 * Math.sin(lt * 6); break;
+        case "float": dy = Math.sin(lt * 2) * 0.015 * H; break;
+        case "spin": rot += lt * 2; break;
+        case "shake": if (lt % 1.2 < 0.35) dx = Math.sin(lt * 45) * 0.008 * W; break;
+        case "slide": dx = (1 - ease) * (o.x > 0.5 ? 1 : -1) * W * 0.6; alpha *= ease; break;
+      }
+      const rem = dur - lt;
+      if (rem < 0.2) alpha *= clamp(rem / 0.2, 0, 1);
+    }
+    let w = W * 0.3, h = W * 0.3;
+    g.save();
+    g.globalAlpha = alpha;
+    g.translate(o.x * W + dx, o.y * H + dy);
+    g.rotate(rot);
+    g.scale(sc, sc);
+    if (o.kind === "sticker") {
+      g.textAlign = "center";
+      g.textBaseline = "middle";
+      if (o.badge) {
+        const fs = W * 0.06;
+        g.font = `900 ${fs}px ${FONT}`;
+        w = g.measureText(o.badge).width + fs * 1.3;
+        h = fs * 1.9;
+        g.shadowColor = "rgba(0,0,0,.35)";
+        g.shadowBlur = fs * 0.4;
+        g.fillStyle = o.color || "#ef3b2d";
+        roundPath(g, -w / 2, -h / 2, w, h, h * 0.32);
+        g.fill();
+        g.shadowBlur = 0;
+        g.fillStyle = isLight(o.color || "#ef3b2d") ? "#0b0b0b" : "#fff";
+        g.fillText(o.badge, 0, fs * 0.06);
+      } else {
+        w = h = W * 0.22;
+        g.font = `${w * 0.85}px "Noto Color Emoji","Apple Color Emoji","Segoe UI Emoji",sans-serif`;
+        g.fillText(o.emoji, 0, w * 0.06);
+      }
+    } else {
+      const e = st.els.get(o.id);
+      const [sw, sh] = e ? srcSize(e) : [0, 0];
+      if (sw && sh) {
+        let sx = 0, sy = 0, sW = sw, sH = sh;
+        w = W * 0.42;
+        h = (w * sh) / sw;
+        if (o.shape === "circle") { const m = Math.min(sw, sh); sx = (sw - m) / 2; sy = (sh - m) / 2; sW = sH = m; h = w; }
+        let src = e.el;
+        if (o.chroma && o.kind === "video") { src = chromaKey(e.el, sx, sy, sW, sH); sx = sy = 0; sW = src.width; sH = src.height; }
+        const path = () => {
+          if (o.shape === "circle") { g.beginPath(); g.arc(0, 0, w / 2, 0, Math.PI * 2); }
+          else roundPath(g, -w / 2, -h / 2, w, h, o.shape === "round" ? w * 0.08 : 0);
+        };
+        if (!o.chroma) {
+          g.save();
+          path();
+          g.shadowColor = "rgba(0,0,0,.45)";
+          g.shadowBlur = W * 0.025;
+          g.fillStyle = "#000";
+          g.fill();
+          g.restore();
+        }
+        g.save();
+        path();
+        g.clip();
+        g.drawImage(src, sx, sy, sW, sH, -w / 2, -h / 2, w, h);
+        g.restore();
+        if (o.border && !o.chroma) { path(); g.lineWidth = W * 0.008; g.strokeStyle = "#fff"; g.stroke(); }
+      } else {
+        g.fillStyle = "rgba(255,255,255,.15)";
+        g.fillRect(-w / 2, -h / 2, w, h);
+      }
+    }
+    if (ui && isSel("ov", o.id)) {
+      g.setLineDash([W * 0.015, W * 0.01]);
+      g.lineWidth = W * 0.004 / Math.max(0.2, sc);
+      g.strokeStyle = "#fff";
+      g.strokeRect(-w / 2 - W * 0.01, -h / 2 - W * 0.01, w + W * 0.02, h + W * 0.02);
+    }
+    g.restore();
+    if (ui) st.hits.push({ o, x: o.x * W, y: o.y * H, w: w * o.scale, h: h * o.scale, rot: (o.rot * Math.PI) / 180 });
+  }
+
+  /* --- Mover con el dedo sobre la vista previa: 1 dedo mueve, 2 dedos agrandan y giran --- */
+  const wrapEl = $("#stWrap");
+  const ptrs = new Map();
+  let gest = null;
+  const canvasPoint = (ev) => {
+    const r = cv.getBoundingClientRect();
+    return { x: ((ev.clientX - r.left) * cv.width) / r.width, y: ((ev.clientY - r.top) * cv.height) / r.height };
+  };
+  function hitTest(pt) {
+    for (let i = st.hits.length - 1; i >= 0; i--) {
+      const h = st.hits[i];
+      const dx = pt.x - h.x, dy = pt.y - h.y;
+      const c = Math.cos(-h.rot), s = Math.sin(-h.rot);
+      const lx = dx * c - dy * s, ly = dx * s + dy * c;
+      // margen de toque generoso: al menos 24 px de pantalla
+      const pad = Math.max(cv.width * 0.03, (24 * cv.width) / Math.max(1, cv.getBoundingClientRect().width));
+      if (Math.abs(lx) <= h.w / 2 + pad && Math.abs(ly) <= h.h / 2 + pad) return h;
+    }
+    return null;
+  }
+  wrapEl.addEventListener("pointerdown", (ev) => {
+    if (!st.p || st.exp) return;
+    const pt = canvasPoint(ev);
+    ptrs.set(ev.pointerId, pt);
+    try { wrapEl.setPointerCapture(ev.pointerId); } catch {}
+    if (st.playing) pause();
+    if (ptrs.size === 1) {
+      let h = hitTest(pt);
+      // si ya hay una capa o texto seleccionado y visible, se puede mover/pellizcar tocando en cualquier parte
+      if (!h && st.sel && (st.sel.type === "ov" || st.sel.type === "text")) {
+        const cur = findSel();
+        const on = cur && (st.sel.type === "ov" ? st.t >= cur.start && st.t < ovEnd(cur) : st.t >= cur.start && st.t < cur.end);
+        if (on) h = st.sel.type === "ov" ? { o: cur } : { tx: cur };
+      }
+      if (!h) { gest = null; return; }
+      const target = h.o || h.tx;
+      const type = h.o ? "ov" : "text";
+      if (!isSel(type, target.id)) select({ type, id: target.id });
+      st.hist.push(snapshot());
+      st.fut = [];
+      gest = { type, target, start: pt, x0: target.x, y0: target.y, moved: false, pinch: null };
+    } else if (ptrs.size === 2 && gest) {
+      const [a, b] = [...ptrs.values()];
+      gest.pinch = { d0: Math.hypot(b.x - a.x, b.y - a.y), a0: Math.atan2(b.y - a.y, b.x - a.x), s0: gest.type === "ov" ? gest.target.scale : gest.target.size, r0: gest.target.rot || 0 };
+    }
+  });
+  wrapEl.addEventListener("pointermove", (ev) => {
+    if (!ptrs.has(ev.pointerId) || !gest) return;
+    const pt = canvasPoint(ev);
+    ptrs.set(ev.pointerId, pt);
+    const T = gest.target;
+    if (ptrs.size >= 2 && gest.pinch) {
+      const [a, b] = [...ptrs.values()];
+      const k = Math.hypot(b.x - a.x, b.y - a.y) / Math.max(1, gest.pinch.d0);
+      if (gest.type === "ov") {
+        T.scale = clamp(gest.pinch.s0 * k, 0.15, 6);
+        T.rot = Math.round(gest.pinch.r0 + ((Math.atan2(b.y - a.y, b.x - a.x) - gest.pinch.a0) * 180) / Math.PI);
+      } else T.size = clamp(gest.pinch.s0 * k, 2, 20);
+    } else {
+      const dx = (pt.x - gest.start.x) / cv.width, dy = (pt.y - gest.start.y) / cv.height;
+      if (Math.abs(dx) + Math.abs(dy) > 0.004) gest.moved = true;
+      if (gest.type === "ov") {
+        T.x = clamp(gest.x0 + dx, 0, 1);
+        T.y = clamp(gest.y0 + dy, 0, 1);
+        if (Math.abs(T.x - 0.5) < 0.015) T.x = 0.5; // imán al centro
+        if (Math.abs(T.y - 0.5) < 0.015) T.y = 0.5;
+      } else T.y = clamp(gest.y0 + dy, 0.03, 0.97);
+    }
+    gest.moved ||= !!gest.pinch;
+    requestDraw(false);
+  });
+  const endGesture = (ev) => {
+    ptrs.delete(ev.pointerId);
+    if (!gest) return;
+    if (ptrs.size === 0) {
+      if (!gest.moved) st.hist.pop();
+      else { st.lastKey = ""; changed(false); renderPanel(); }
+      gest = null;
+    } else if (ptrs.size === 1) {
+      const pt = [...ptrs.values()][0];
+      Object.assign(gest, { pinch: null, start: pt, x0: gest.target.x, y0: gest.target.y });
+    }
+  };
+  wrapEl.addEventListener("pointerup", endGesture);
+  wrapEl.addEventListener("pointercancel", endGesture);
+
+  function drawFrame(g, t, W, H, ui = false) {
     g.save();
     g.fillStyle = "#000";
     g.fillRect(0, 0, W, H);
@@ -608,7 +870,9 @@
         }
       } else drawClip(g, o, lt, W, H);
     }
-    for (const tx of st.p.texts) if (t >= tx.start && t < tx.end) drawText(g, tx, t - tx.start, W, H);
+    if (ui) st.hits = [];
+    for (const o of st.p.overlays) if (t >= o.start && t < ovEnd(o)) drawOverlay(g, o, t - o.start, W, H, ui);
+    for (const tx of st.p.texts) if (t >= tx.start && t < tx.end) drawText(g, tx, t - tx.start, W, H, ui);
     g.restore();
   }
 
@@ -618,7 +882,7 @@
     st.drawRaf = requestAnimationFrame(() => {
       if (!st.p) return;
       if (seek) syncVideos(st.t);
-      drawFrame(ctx, st.t, cv.width, cv.height);
+      drawFrame(ctx, st.t, cv.width, cv.height, true);
       updateTime();
     });
   }
@@ -721,6 +985,18 @@
 
   const isSel = (type, id) => st.sel?.type === type && st.sel.id === id;
 
+  function lanesFor(items, startOf, endOf) {
+    const lanes = [];
+    const map = new Map();
+    for (const it of [...items].sort((x, y) => startOf(x) - startOf(y))) {
+      let i = lanes.findIndex((end) => end <= startOf(it) + 0.01);
+      if (i < 0) { i = lanes.length; lanes.push(0); }
+      lanes[i] = endOf(it);
+      map.set(it.id, i);
+    }
+    return { map, n: lanes.length };
+  }
+
   function audioLanes() {
     const lanes = [];
     const map = new Map();
@@ -738,6 +1014,7 @@
     const pts = [0, total(), st.t];
     for (const o of st.L) pts.push(o.start, o.end);
     for (const x of st.p.texts) if (x.id !== exceptId) pts.push(x.start, x.end);
+    for (const o of st.p.overlays) if (o.id !== exceptId) pts.push(o.start, ovEnd(o));
     for (const a of st.p.audios) {
       if (a.id === exceptId) continue;
       pts.push(a.start, a.start + a.dur);
@@ -813,10 +1090,21 @@
     const T = total();
     const lanes = audioLanes();
     const nl = Math.max(1, lanes.n);
-    $("#studio").style.setProperty("--tlh", 100 + Math.min(4, nl) * 28 + 6 + "px");
+    const ovl = lanesFor(st.p.overlays, (o) => o.start, ovEnd);
+    // filas: clips · capas (stickers / video sobre video) · textos · audio
+    const ovTop = 70, textTop = ovTop + ovl.n * 28, audTop = textTop + 30;
+    const fullH = audTop + nl * 28 + 6;
+    const tlh = Math.min(fullH, 196); // si hay muchas filas, la línea de tiempo se desliza en vertical
+    $("#studio").style.setProperty("--tlh", tlh + "px");
+    tl.style.overflowY = fullH > tlh ? "auto" : "hidden";
+    tl.style.touchAction = fullH > tlh ? "pan-x pan-y" : "pan-x";
+    $("#stOvs").style.top = ovTop + "px";
+    $("#stOvs").style.height = ovl.n * 28 + "px";
+    $("#stTexts").style.top = textTop + "px";
+    $("#stMusic").style.top = audTop + "px";
     $("#stMusic").style.height = nl * 28 + "px";
-    $("#stTracks").style.height = 100 + nl * 28 + 6 + "px";
-    $("#stTracks").style.width = pad * 2 + Math.max(T, ...st.p.audios.map((a) => a.start + a.dur), ...st.p.texts.map((x) => x.end)) * pps + 70 + "px";
+    $("#stTracks").style.height = fullH + "px";
+    $("#stTracks").style.width = pad * 2 + Math.max(T, ...st.p.audios.map((a) => a.start + a.dur), ...st.p.texts.map((x) => x.end), ...st.p.overlays.map(ovEnd)) * pps + 70 + "px";
     const X = (t) => pad + t * pps;
 
     /* --- Clips (pista principal) --- */
@@ -886,6 +1174,54 @@
     ghost.style.left = X(T) + 6 + "px";
     ghost.addEventListener("click", (ev) => { ev.stopPropagation(); openAdd(); });
     clips.append(ghost);
+
+    /* --- Capas: stickers, fotos y video sobre video --- */
+    const ovs = $("#stOvs");
+    ovs.innerHTML = "";
+    for (const o of st.p.overlays) {
+      const sel = isSel("ov", o.id);
+      const end = ovEnd(o);
+      const b = el("div", "st-ov " + o.kind + (sel ? " st-sel" : ""));
+      b.style.top = ovl.map.get(o.id) * 28 + "px";
+      b.style.left = X(o.start) + "px";
+      b.style.width = Math.max(14, (end - o.start) * pps - 2) + "px";
+      const e = st.els.get(o.id);
+      if (e?.thumb) b.style.backgroundImage = `url("${e.thumb}")`;
+      b.append(el("b", "", o.kind === "sticker" ? (o.emoji || o.badge) : o.kind === "video" ? "▣ Video" + (o.chroma ? " 🟩" : "") : "◉ Foto"));
+      b.addEventListener("click", (ev) => { ev.stopPropagation(); if (!st.justDragged) select({ type: "ov", id: o.id }); });
+      if (sel) {
+        const pts = snapPoints(o.id);
+        const len = end - o.start;
+        const moveTo = (ds) => {
+          let s0 = Math.max(0, o.start + ds);
+          const s1 = snap(s0, pts), s2 = snap(s0 + len, pts) - len;
+          return Math.max(0, Math.abs(s1 - s0) <= Math.abs(s2 - s0) ? s1 : s2);
+        };
+        attachDrag(b, (ds) => { const s0 = moveTo(ds); b.style.left = X(s0) + "px"; tag(b, fmt(s0)); },
+          (ds, moved) => {
+            if (!moved) return;
+            const s0 = moveTo(ds);
+            mutate(() => { if (o.kind !== "video") o.end = s0 + len; o.start = s0; });
+          });
+        const edges = (side, ds) => {
+          if (o.kind === "video") {
+            if (side === "l") {
+              const d = clamp(snap(o.start + ds, pts) - o.start, Math.max(-o.start, -o.trimStart), o.trimEnd - o.trimStart - 0.3);
+              return { start: o.start + d, trimStart: o.trimStart + d, trimEnd: o.trimEnd };
+            }
+            const ne = clamp(snap(end + ds, pts), o.start + 0.3, o.start + (o.srcDur - o.trimStart));
+            return { start: o.start, trimStart: o.trimStart, trimEnd: o.trimStart + (ne - o.start) };
+          }
+          return side === "l"
+            ? { start: Math.max(0, Math.min(snap(o.start + ds, pts), o.end - 0.2)), end: o.end }
+            : { start: o.start, end: Math.max(o.start + 0.2, snap(o.end + ds, pts)) };
+        };
+        const span = (r) => (o.kind === "video" ? [r.start, r.start + r.trimEnd - r.trimStart] : [r.start, r.end]);
+        addHandles(b, (side, ds) => { const [s0, e0] = span(edges(side, ds)); return [X(s0), (e0 - s0) * pps - 2, (e0 - s0).toFixed(1) + " s"]; },
+          (side, ds) => { const r = edges(side, ds); mutate(() => Object.assign(o, r)); });
+      }
+      ovs.append(b);
+    }
 
     /* --- Textos --- */
     const texts = $("#stTexts");
@@ -1009,6 +1345,7 @@
   async function changed(rebuild) {
     if (rebuild) {
       for (const c of st.p.clips) await loadEl(c);
+      for (const o of st.p.overlays) if (o.kind !== "sticker") await loadEl(o);
       pruneEls();
       await ensureBufs();
     }
@@ -1063,6 +1400,7 @@
     if (s.type === "clip") return st.p.clips.find((c) => c.id === s.id);
     if (s.type === "text") return st.p.texts.find((x) => x.id === s.id);
     if (s.type === "audio") return st.p.audios.find((a) => a.id === s.id);
+    if (s.type === "ov") return st.p.overlays.find((o) => o.id === s.id);
     return null;
   }
 
@@ -1072,6 +1410,10 @@
     if (s?.type === "text") {
       const tx = findSel();
       if (tx && (st.t < tx.start || st.t >= tx.end)) { st.t = tx.start + 0.01; requestDraw(); }
+    }
+    if (s?.type === "ov") {
+      const o = findSel();
+      if (o && (st.t < o.start || st.t >= ovEnd(o))) { st.t = o.start + 0.01; requestDraw(); }
     }
     if (s?.type === "audio") {
       const a = findSel();
@@ -1106,6 +1448,17 @@
         ["tdel", "🗑", "Borrar", "danger"],
       ];
     }
+    if (s?.type === "ov") {
+      const o = findSel();
+      const k = o?.kind;
+      return [
+        ["back", "‹", "Atrás"], ...(k === "sticker" ? [["ostk", "😀", "Cambiar"]] : []), ["omove", "✥", "Tamaño y giro"], ["oanim", "✦", "Animación"],
+        ...(k !== "sticker" ? [["oshape", "◯", "Forma"]] : []), ["oopa", "◐", "Opacidad"],
+        ...(k === "video" ? [["otrim", "⇤⇥", "Recortar"], ["ovol", "🔊", "Volumen"], ["ochroma", "🟩", "Fondo verde"]] : []),
+        ...(k === "sticker" && o.badge ? [["ocolor", "🎨", "Color"]] : []),
+        ["ofront", "⬆", "Al frente"], ["oback", "⬇", "Al fondo"], ["odup", "⧉", "Duplicar"], ["odel", "🗑", "Borrar", "danger"],
+      ];
+    }
     if (s?.type === "audio") {
       return [
         ["back", "‹", "Atrás"], ["avol", "🔊", "Volumen"], ["afade", "◢", "Fundidos"], ["afx", "✺", "Efectos"],
@@ -1114,7 +1467,7 @@
       ];
     }
     return [
-      ["add", "＋", "Medios"], ["text", "T", "Texto"], ["subs", "CC", "Subtítulos"], ["aadd", "♫", "Audio"], ["rec", "🎙", "Voz en off"], ["hooks", "🪝", "Ganchos"],
+      ["add", "＋", "Medios"], ["text", "T", "Texto"], ["sticker", "😀", "Stickers"], ["pip", "▣", "Superponer"], ["subs", "CC", "Subtítulos"], ["aadd", "♫", "Audio"], ["rec", "🎙", "Voz en off"], ["hooks", "🪝", "Ganchos"],
       ["format", "▭", "Formato"], ["safe", "◰", "Zona segura"], ["transAll", "⇄", "Transiciones"], ["filtersAll", "◐", "Filtros"],
     ];
   }
@@ -1214,6 +1567,21 @@
         await mutate((p) => p.audios.push(b));
         return select({ type: "audio", id: b.id });
       }
+      case "ofront":
+      case "oback": {
+        const o = findSel();
+        await mutate((p) => { p.overlays = p.overlays.filter((x) => x !== o); if (id === "ofront") p.overlays.push(o); else p.overlays.unshift(o); });
+        return toast(id === "ofront" ? "Capa al frente" : "Capa al fondo");
+      }
+      case "odup": {
+        const o = findSel();
+        const b = { ...o, id: uid(), x: clamp(o.x + 0.05, 0, 1), y: clamp(o.y + 0.05, 0, 1) };
+        await mutate((p) => p.overlays.push(b), { rebuild: true });
+        return select({ type: "ov", id: b.id });
+      }
+      case "odel":
+        await mutate((p) => { p.overlays = p.overlays.filter((x) => x.id !== st.sel.id); }, { rebuild: true });
+        return select(null);
       case "adel":
         await mutate((p) => { p.audios = p.audios.filter((x) => x.id !== st.sel.id); });
         return select(null);
@@ -1273,6 +1641,7 @@
     const c = st.sel?.type === "clip" ? findSel() : null;
     const tx = st.sel?.type === "text" ? findSel() : null;
     const a = st.sel?.type === "audio" ? findSel() : null;
+    const ov = st.sel?.type === "ov" ? findSel() : null;
     const T = total();
     const secs = (v) => v.toFixed(1) + " s";
     const pct = (v) => Math.round(v * 100) + "%";
@@ -1383,6 +1752,120 @@
           row(btn("Empieza en el cabezal", () => mutate(() => { tx.start = Math.min(st.t, tx.end - 0.2); }).then(renderPanel)),
               btn("Termina en el cabezal", () => mutate(() => { tx.end = Math.max(st.t, tx.start + 0.2); }).then(renderPanel))),
           btn("Mostrar durante todo el reel", () => mutate(() => { tx.start = 0; tx.end = T; }).then(renderPanel), "btn wide"));
+      case "sticker": {
+        const at = clamp(st.t, 0, Math.max(0, T - 0.3));
+        const end = Math.min(Math.max(T, at + 1), at + 3);
+        const add = (ov) => mutate((p) => p.overlays.push(ov), { rebuild: true }).then(() => select({ type: "ov", id: ov.id }, "omove"));
+        const grid = el("div", "st-pickgrid");
+        for (const ph of photos.slice(0, 24)) {
+          const b = el("button");
+          const img = el("img");
+          img.src = blobUrl(ph.rendered || ph.blob);
+          b.append(img);
+          b.addEventListener("click", () => add(newOvPhoto(ph.id, at, end)));
+          grid.append(b);
+        }
+        return showPanel("Stickers (se agregan en " + fmt(at) + ")",
+          label("Emojis"),
+          chips(EMOJIS.map((e) => [e, e]), null, (e) => add(newSticker({ emoji: e, start: at, end })), true),
+          label("Etiquetas"),
+          chips(BADGES.map(([t]) => [t, t]), null, (t) => add(newSticker({ badge: t, color: BADGES.find((b) => b[0] === t)[1], start: at, end, y: 0.75, scale: 1 })), true),
+          label("Tus fotos como sticker"),
+          photos.length ? grid : el("p", "hint", "Sube fotos en la Galería para usarlas como sticker."),
+          el("p", "hint", "Mueve el sticker con el dedo sobre el video; con dos dedos lo agrandas y lo giras."));
+      }
+      case "pip": {
+        const at = clamp(st.t, 0, Math.max(0, T - 0.3));
+        const add = async (m) => {
+          const ov = newOvVideo(m, at);
+          await mutate((p) => p.overlays.push(ov), { rebuild: true });
+          select({ type: "ov", id: ov.id }, "omove");
+          toast("Video superpuesto: muévelo con el dedo sobre la vista previa");
+        };
+        const lab = el("label", "btn wide primary");
+        const inp = document.createElement("input");
+        inp.type = "file";
+        inp.accept = "video/*";
+        inp.hidden = true;
+        inp.addEventListener("change", async () => {
+          const f = inp.files[0];
+          if (!f) return;
+          lab.lastChild.textContent = " Importando…";
+          try { await add(await importVideo(f)); } catch (err) { toast("No se pudo abrir ese video: " + err.message, 4000); }
+        });
+        lab.append(inp, document.createTextNode("🎬 Elegir video del teléfono"));
+        const list = el("div", "st-pickgrid");
+        DB.all("media").then((ms) => {
+          for (const m of ms.filter((x) => x.id !== "app-cover" && x.duration).sort((x, y) => y.created - x.created).slice(0, 16)) {
+            const b = el("button");
+            const img = el("img");
+            img.src = m.thumb;
+            b.append(img, el("span", "n", fmtTime(m.duration)));
+            b.addEventListener("click", () => add(m));
+            list.append(b);
+          }
+        });
+        return showPanel("Video sobre video (en " + fmt(at) + ")", lab,
+          el("p", "hint", "Ideal para reacciones, tu cara en una esquina mientras explicas, o un video con pantalla verde."),
+          label("Videos que ya usaste"), list);
+      }
+      case "ostk":
+        return showPanel("Cambiar sticker",
+          chips(EMOJIS.map((e) => [e, e]), ov.emoji, (e) => mutate(() => { ov.emoji = e; delete ov.badge; }).then(() => { renderTools(); }), true),
+          chips(BADGES.map(([t]) => [t, t]), ov.badge, (t) => mutate(() => { ov.badge = t; ov.color = BADGES.find((b) => b[0] === t)[1]; delete ov.emoji; }).then(renderTools), true));
+      case "omove": {
+        const sl = (lab, min, max, step, key, show) => slider(lab, min, max, step, ov[key], show, (v) => mutate(() => { ov[key] = v; }, { key: key + ov.id }));
+        return showPanel("Tamaño, giro y posición",
+          sl("Tamaño", 0.15, 6, 0.01, "scale", (v) => Math.round(v * 100) + "%"),
+          sl("Giro", -180, 180, 1, "rot", (v) => Math.round(v) + "°"),
+          sl("Horizontal", 0, 1, 0.01, "x", pct),
+          sl("Vertical", 0, 1, 0.01, "y", pct),
+          chips([["0.22,0.2", "↖"], ["0.78,0.2", "↗"], ["0.5,0.5", "Centro"], ["0.22,0.78", "↙"], ["0.78,0.78", "↘"]], null, (v) => {
+            const [x, y] = v.split(",").map(Number);
+            mutate(() => { ov.x = x; ov.y = y; }).then(renderPanel);
+          }),
+          el("p", "hint", "También puedes arrastrarlo con un dedo sobre el video y pellizcar con dos para agrandar y girar."));
+      }
+      case "oanim":
+        return showPanel("Animación", chips(OANIMS, ov.anim, (v) => mutate(() => { ov.anim = v; }).then(() => { st.t = ov.start; play(); }), true));
+      case "oshape": {
+        const l = el("label", "check row");
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = ov.border;
+        cb.addEventListener("change", () => mutate(() => { ov.border = cb.checked; }));
+        l.append(cb, document.createTextNode(" Borde blanco"));
+        return showPanel("Forma", chips(SHAPES, ov.shape, (v) => mutate(() => { ov.shape = v; })), l);
+      }
+      case "oopa":
+        return showPanel("Opacidad", slider("Opacidad", 0.1, 1, 0.01, ov.opacity, pct, (v) => mutate(() => { ov.opacity = v; }, { key: "oo" + ov.id })));
+      case "otrim":
+        return showPanel("Recortar video superpuesto",
+          slider("Inicio", 0, Math.max(0.2, ov.srcDur - 0.3), 0.05, ov.trimStart, secs, (v) => mutate(() => { ov.trimStart = Math.min(v, ov.trimEnd - 0.3); }, { key: "ots" + ov.id })),
+          slider("Fin", 0.3, ov.srcDur, 0.05, ov.trimEnd, secs, (v) => mutate(() => { ov.trimEnd = Math.max(v, ov.trimStart + 0.3); }, { key: "ote" + ov.id })),
+          el("p", "hint", "También puedes arrastrar las asas blancas del bloque en la línea de tiempo."));
+      case "ovol": {
+        const l = el("label", "check row");
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = ov.muted;
+        cb.addEventListener("change", () => mutate(() => { ov.muted = cb.checked; }));
+        l.append(cb, document.createTextNode(" Silenciar este video"));
+        return showPanel("Volumen", slider("Volumen", 0, 2, 0.05, ov.volume, pct, (v) => mutate(() => { ov.volume = v; }, { key: "ov" + ov.id })), l);
+      }
+      case "ochroma": {
+        const l = el("label", "check row");
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = ov.chroma;
+        cb.addEventListener("change", () => mutate(() => { ov.chroma = cb.checked; if (cb.checked) ov.shape = "rect"; }));
+        l.append(cb, document.createTextNode(" Quitar el fondo verde"));
+        return showPanel("Pantalla verde", l,
+          el("p", "hint", "Graba frente a una pared o tela verde bien iluminada. Mog borra el verde y deja solo a la persona encima de tu reel."));
+      }
+      case "ocolor":
+        return showPanel("Color de la etiqueta",
+          chips(COLORS.map((c) => [c, "●"]), ov.color, (v) => mutate(() => { ov.color = v; }), true));
       case "aadd": {
         const at = clamp(st.t, 0, Math.max(0, T - 0.1));
         const add = async (src, ref) => {
@@ -1528,6 +2011,23 @@
         src.playbackRate.value = c.speed;
         src.connect(off.destination);
         src.start(o.start, c.trimStart, Math.max(0.05, c.trimEnd - c.trimStart));
+        any = true;
+      }
+    }
+    if (source !== "music") {
+      for (const o of st.p.overlays) {
+        if (o.kind !== "video" || o.muted || o.volume <= 0) continue;
+        let buf = decoded16k.get(o.src);
+        if (buf === undefined) {
+          const m = await DB.get("media", o.src);
+          try { buf = m ? await off.decodeAudioData(await m.blob.arrayBuffer()) : null; } catch { buf = null; }
+          decoded16k.set(o.src, buf);
+        }
+        if (!buf) continue;
+        const src = off.createBufferSource();
+        src.buffer = buf;
+        src.connect(off.destination);
+        src.start(o.start, o.trimStart, Math.max(0.05, o.trimEnd - o.trimStart));
         any = true;
       }
     }
@@ -1850,6 +2350,7 @@
     renderPanel();
     if (p.clips.length) toast("Cargando…", 1200);
     for (const c of p.clips) await loadEl(c);
+    for (const o of p.overlays) if (o.kind !== "sticker") await loadEl(o);
     await ensureBufs();
     await changed(false);
     st.hist = [];

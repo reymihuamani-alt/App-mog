@@ -19,6 +19,9 @@ Pestaña **Reels**: editor tipo CapCut para crear videos para TikTok, Instagram 
   ajusta las fotos para que cambien al compás.
 - **Movimiento libre:** toca un bloque y arrástralo (clips se reordenan; textos y audios cambian de momento); las asas
   blancas recortan o alargan; los bordes se imantan al cabezal, a los cortes y a los golpes del ritmo.
+- **Stickers:** emojis, etiquetas (SÍGUEME, LINK EN BIO, PARTE 2…) y tus fotos, con animaciones (pop, rebote, latido, flotar, girar, vibrar).
+- **Video sobre video:** reacciones o tu cara en una esquina; forma rectangular, redondeada o círculo, borde, opacidad, volumen,
+  recorte y quitar fondo verde (pantalla verde). Las capas se mueven con un dedo sobre la vista previa y se agrandan/giran con dos.
 - **Subtítulos automáticos (CC):** Whisper reconoce la voz en el propio teléfono (sin clave ni costo; el modelo de 41–77 MB
   se descarga una sola vez). Español, inglés, portugués o detección automática; estilos karaoke, amarillo, blanco, caja y rojo;
   1, 3 o una frase por subtítulo; también puede transcribir la letra de la música.

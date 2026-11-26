@@ -92,7 +92,7 @@
   box-shadow: 0 0 6px rgba(0,0,0,.8); pointer-events: none; z-index: 3;
 }
 
-.st-panel { flex: none; max-height: 34dvh; overflow-y: auto; padding: 10px 14px 4px; background: #111114; border-top: 1px solid var(--line); }
+.st-panel { flex: none; max-height: 30dvh; overflow-y: auto; padding: 10px 14px 4px; background: #111114; border-top: 1px solid var(--line); }
 .st-panel .ph { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
 .st-panel .ph b { font-size: 14px; }
 .st-panel .ph button { background: none; border: 0; color: var(--muted); font-size: 18px; width: 36px; height: 30px; cursor: pointer; }
@@ -167,3 +167,15 @@
 .st-drop { position: absolute; top: -6px; bottom: -6px; width: 4px; margin-left: -2px; background: var(--red); border-radius: 2px; z-index: 6; box-shadow: 0 0 8px var(--red); }
 .st-clip.st-sel { transition: none; }
 .rec-btn.primary { background: var(--red); border-color: var(--red); color: #fff; }
+
+/* ---------------- Capas: stickers y video sobre video ---------------- */
+.st-ov {
+  position: absolute; height: 24px; border-radius: 6px; overflow: hidden; cursor: pointer; border: 2px solid transparent; box-sizing: border-box;
+  display: flex; align-items: center; background: #8a4b12 center / auto 100% repeat-x; color: #fff;
+}
+.st-ov.video { background-color: #1d4f8a; }
+.st-ov.photo { background-color: #6a2f6a; }
+.st-ov b { position: relative; z-index: 1; padding: 0 6px; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 1px 2px #000; }
+.st-ov.st-sel { overflow: visible; }
+.st-canvas-wrap { touch-action: none; }
+.st-pickgrid .n { font-size: 10px; min-width: 32px; }
